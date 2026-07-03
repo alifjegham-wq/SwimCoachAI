@@ -1,0 +1,14 @@
+name = "swim-coach-ai"
+compatibility_date = "2024-09-23"
+pages_build_output_dir = "."
+
+# Cloudflare D1 database binding (used by the account + sync Functions).
+# 1) npx wrangler d1 create swim-coach-ai
+# 2) paste the printed database_id below
+# 3) npx wrangler d1 execute swim-coach-ai --remote --file=./schema.sql
+# In the Pages dashboard you can instead add this binding under
+#   Settings -> Functions -> D1 database bindings (variable name: DB).
+[[d1_databases]]
+binding = "DB"
+database_name = "swim-coach-ai"
+database_id = "PUT_YOUR_D1_DATABASE_ID_HERE"

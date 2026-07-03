@@ -1,0 +1,15 @@
+{
+  "name": "swim-coach-ai",
+  "version": "1.0.0",
+  "description": "Swim Coach AI — analyze a swimmer's stroke from phone video with an Olympic-level AI coach. Static app + Cloudflare Pages Functions (BYO Anthropic key) with optional D1 accounts.",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler pages dev . --d1 DB",
+    "deploy": "wrangler pages deploy .",
+    "db:create": "wrangler d1 create swim-coach-ai",
+    "db:init": "wrangler d1 execute swim-coach-ai --remote --file=./schema.sql"
+  },
+  "devDependencies": {
+    "wrangler": "^3.78.0"
+  }
+}
