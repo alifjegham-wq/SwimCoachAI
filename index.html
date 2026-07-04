@@ -1,0 +1,2102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Swim Coach AI — Stroke Video Analyzer</title>
+
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
+
+<!-- TensorFlow.js + MoveNet (pose overlay) is loaded lazily on demand — see loadPoseLibs() -->
+
+
+<style>
+  :root{
+    --bg:#070d18; --panel:#101b2e; --panel2:#0c1525; --panel3:#0a1220;
+    --ink:#eaf1fb; --muted:#9bacc7; --faint:#6c7c97;
+    --line:#1f2f48; --line2:#2a3d5c;
+    --accent:#3aa9ff; --accent2:#22d3c0; --grad:linear-gradient(135deg,#3aa9ff,#22d3c0);
+    --warn:#ffba49; --good:#36d67a; --dev:#3aa9ff; --needs:#ff7a8a; --na:#7d8ba5;
+    --shadow:0 14px 40px rgba(0,0,0,.45); --shadow2:0 4px 14px rgba(0,0,0,.3);
+    --r:16px;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:
+      radial-gradient(900px 500px at 85% -5%,rgba(34,211,192,.10),transparent 60%),
+      radial-gradient(900px 500px at 10% 0%,rgba(58,169,255,.12),transparent 55%),
+      linear-gradient(180deg,#070d18,#060a12);
+    color:var(--ink);font:15px/1.55 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;min-height:100vh}
+  .wrap{max-width:1200px;margin:0 auto;padding:26px 20px 90px}
+
+  /* header + stepper */
+  .topbar{display:flex;flex-wrap:wrap;align-items:center;gap:14px;margin-bottom:14px}
+  .logo{width:46px;height:46px;border-radius:13px;background:var(--grad);display:grid;place-items:center;font-size:24px;box-shadow:var(--shadow2)}
+  h1{font-size:27px;margin:0;letter-spacing:-.3px}
+  .sub{color:var(--muted);margin:3px 0 0;font-size:14px}
+  .stepper{position:relative;background:rgba(8,13,24,.5);
+    border:1px solid var(--line);border-radius:14px;padding:8px;margin:6px 0 18px;display:flex;flex-direction:column;gap:4px}
+  .snode{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:10px;cursor:pointer;transition:.15s;white-space:nowrap}
+  .snode:hover{background:rgba(255,255,255,.04)}
+  .snode.active{background:rgba(58,169,255,.13);box-shadow:inset 0 0 0 1px rgba(58,169,255,.4)}
+  .snode .dot{width:24px;height:24px;border-radius:50%;display:grid;place-items:center;font-size:12px;font-weight:800;
+    background:var(--panel2);border:1px solid var(--line2);color:var(--muted);flex:0 0 auto}
+  .snode.done .dot{background:var(--grad);color:#04121f;border:none}
+  .snode.active .dot{box-shadow:0 0 0 3px rgba(58,169,255,.25)}
+  .snode .lbl{font-size:12.5px;color:var(--muted)} .snode.active .lbl,.snode.done .lbl{color:var(--ink)}
+  .snode.active{box-shadow:inset 0 0 0 1px rgba(58,169,255,.4),0 4px 14px rgba(0,0,0,.18)}
+
+  /* two-column layout: step rail (left) parallel to the workflow (right) */
+  .layout{display:flex;gap:22px;align-items:flex-start}
+  .rail{position:sticky;top:14px;flex:0 0 196px;width:196px;z-index:20}
+  .main{flex:1;min-width:0}
+  .raillabel{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);margin:2px 0 8px 8px}
+  .rail .stepper{margin:0}
+  @media(max-width:880px){
+    .layout{flex-direction:column;gap:8px}
+    .rail{position:static;width:auto;flex:none}
+    .raillabel{display:none}
+    .rail .stepper{flex-direction:row;overflow-x:auto}
+    .rail .snode{flex:1;min-width:92px;justify-content:center;white-space:nowrap}
+  }
+
+  .card{background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line);border-radius:var(--r);
+    padding:18px 18px;margin:16px 0;box-shadow:var(--shadow);scroll-margin-top:84px}
+  .card h2{font-size:16px;margin:0 0 14px;display:flex;align-items:center;gap:10px}
+  .stepn{display:inline-grid;place-items:center;width:24px;height:24px;border-radius:8px;background:var(--grad);color:#04121f;font-weight:800;font-size:12px}
+  .stepn.idle{background:var(--panel3);color:var(--muted);border:1px solid var(--line2)}
+  .ctitle-r{margin-left:auto;font-size:12px;color:var(--faint);font-weight:500}
+
+  .grid{display:grid;gap:12px}
+  .g2{grid-template-columns:repeat(2,1fr)} .g3{grid-template-columns:repeat(3,1fr)}
+  @media(max-width:760px){.g2,.g3{grid-template-columns:1fr}}
+  label{display:block;font-size:12px;color:var(--muted);margin:0 0 5px;font-weight:600;letter-spacing:.2px}
+  input[type=text],input[type=number],select,textarea{width:100%;background:var(--panel3);border:1px solid var(--line2);
+    color:var(--ink);border-radius:10px;padding:10px 12px;font:inherit;transition:.15s}
+  input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(58,169,255,.18)}
+  textarea{min-height:66px;resize:vertical}
+  .btn{appearance:none;border:1px solid var(--line2);background:var(--panel3);color:var(--ink);border-radius:11px;
+    padding:11px 16px;font:inherit;font-weight:600;cursor:pointer;transition:.15s;display:inline-flex;align-items:center;gap:8px}
+  .btn:hover:not(:disabled){border-color:var(--accent);transform:translateY(-1px)}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+  .btn.primary{background:var(--grad);color:#04121f;border:none;font-weight:800;box-shadow:0 6px 18px rgba(34,211,192,.25)}
+  .btn.sm{padding:7px 11px;font-size:13px;border-radius:9px}
+  .btn.ghost{background:transparent}
+  .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .hint{color:var(--muted);font-size:12.5px}
+  .hintbox{background:rgba(58,169,255,.07);border:1px solid rgba(58,169,255,.22);border-radius:11px;padding:11px 13px;font-size:13px;color:#cfe4ff}
+
+  /* dropzone */
+  .drop{border:2px dashed var(--line2);border-radius:14px;padding:30px 18px;text-align:center;transition:.15s;cursor:pointer;background:var(--panel3)}
+  .drop:hover,.drop.over{border-color:var(--accent);background:rgba(58,169,255,.06)}
+  .drop .big{font-size:34px;margin-bottom:6px}
+  .drop input{display:none}
+
+  .video-stage{position:relative;background:#000;border-radius:13px;overflow:hidden;border:1px solid var(--line)}
+  .video-stage video{display:block;width:100%;max-height:360px;object-fit:contain;background:#000}
+
+  /* filmstrip */
+  .filmstrip{display:flex;gap:10px;overflow-x:auto;padding:6px 2px 12px;scrollbar-width:thin}
+  .frame{position:relative;flex:0 0 auto;width:152px;border-radius:11px;overflow:hidden;border:2px solid transparent;cursor:pointer;background:#000;transition:.12s}
+  .frame:hover{transform:translateY(-2px)}
+  .frame img{display:block;width:152px;height:auto}
+  .frame.sel{border-color:var(--accent);box-shadow:0 0 0 3px rgba(58,169,255,.3)}
+  .tag{position:absolute;font-size:11px;padding:2px 7px;border-radius:7px;font-weight:700}
+  .tag.t{left:6px;bottom:6px;background:rgba(0,0,0,.62)}
+  .tag.a{right:6px;top:6px;background:rgba(34,211,192,.9);color:#04121f}
+  .tag.p{left:6px;top:6px;background:rgba(58,169,255,.92);color:#04121f;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .pick{position:absolute;right:6px;bottom:6px;background:var(--accent);color:#04121f;border-radius:50%;width:22px;height:22px;display:grid;place-items:center;font-size:12px;font-weight:800}
+
+  /* selected-frame phase rows */
+  .selrow{display:flex;align-items:center;gap:10px;padding:8px;border:1px solid var(--line);border-radius:11px;background:var(--panel3);margin:8px 0}
+  .selrow img{width:72px;border-radius:8px;display:block}
+  .selrow .meta{flex:1;min-width:0}
+  .selrow select{padding:7px 9px}
+
+  /* chips */
+  .chip{display:inline-block;font-size:12px;padding:3px 11px;border-radius:999px;font-weight:700;text-transform:capitalize}
+  .chip.strength{background:rgba(54,214,122,.16);color:var(--good);border:1px solid rgba(54,214,122,.4)}
+  .chip.developing{background:rgba(58,169,255,.16);color:var(--dev);border:1px solid rgba(58,169,255,.4)}
+  .chip.needs{background:rgba(255,122,138,.16);color:var(--needs);border:1px solid rgba(255,122,138,.4)}
+  .chip.na{background:rgba(125,139,165,.16);color:var(--na);border:1px solid rgba(125,139,165,.4)}
+  .anglechip{display:inline-block;font-size:11px;padding:2px 8px;border-radius:7px;background:rgba(34,211,192,.12);
+    color:var(--accent2);border:1px solid rgba(34,211,192,.3);margin:2px 4px 2px 0;font-family:ui-monospace,Menlo,Consolas,monospace}
+
+  .guard{background:rgba(255,186,73,.07);border:1px solid rgba(255,186,73,.28);border-radius:12px;padding:12px 14px;color:#ffe3b0;font-size:13px}
+  .filewarn{background:rgba(239,68,68,.13);border:1px solid rgba(239,68,68,.5);border-radius:12px;padding:13px 15px;color:#ffd9d9;font-size:14px;line-height:1.55;margin-bottom:14px}
+  body.light .filewarn{color:#8a1c1c;background:rgba(239,68,68,.12);border-color:rgba(239,68,68,.5)}
+  .lockscreen{min-height:72vh;display:flex;align-items:center;justify-content:center;padding:24px}
+  .lockcard{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:26px 24px;width:100%;max-width:340px;box-shadow:var(--shadow)}
+  .profsel{background:var(--panel3);color:var(--ink);border:1px solid var(--line);border-radius:8px;padding:6px 8px;font-size:13px;max-width:170px;flex:0 0 auto}
+  .reviewer{position:relative;background:#04121f;border:1px solid var(--line);border-radius:12px;overflow:hidden;display:flex;align-items:center;justify-content:center;min-height:200px}
+  .reviewer img{max-width:100%;max-height:440px;display:block}
+  .rv-tags{position:absolute;top:8px;left:8px;display:flex;gap:6px}
+  .rv-time{background:rgba(4,18,31,.82);color:#cfe6ff;font-size:12px;padding:3px 7px;border-radius:6px}
+  .rv-phase{background:rgba(58,169,255,.92);color:#04121f;font-size:12px;font-weight:600;padding:3px 7px;border-radius:6px}
+  .settings-modal{position:fixed;inset:0;background:rgba(4,12,22,.55);backdrop-filter:blur(2px);display:flex;align-items:flex-start;justify-content:center;padding:38px 16px;z-index:100;overflow:auto}
+  .settings-card{max-width:680px;width:100%;max-height:86vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.45)}
+  .khub-sum{cursor:pointer;font-weight:700;font-size:15px;list-style:none}
+  .khub-sum::-webkit-details-marker{display:none}
+  .tabbar{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px;border-bottom:1px solid var(--line);padding-bottom:8px}
+  .ktab{background:var(--panel3);color:var(--ink);border:1px solid var(--line);border-radius:9px;padding:7px 13px;font-size:13px;cursor:pointer}
+  .ktab.on{background:var(--accent);color:#04121f;border-color:var(--accent);font-weight:600}
+  .err{background:rgba(255,90,110,.1);border:1px solid rgba(255,90,110,.4);color:#ffb9c2;border-radius:11px;padding:12px 14px;font-size:13px;white-space:pre-wrap}
+
+  /* report */
+  .report-head{background:var(--grad);border-radius:var(--r);padding:20px 20px;color:#04121f;box-shadow:var(--shadow)}
+  .report-head h2{margin:0;font-size:22px;color:#04121f}
+  .report-head p{margin:8px 0 0;font-size:15px;color:#06222b;font-weight:500}
+  .dim{border:1px solid var(--line);border-radius:12px;padding:13px 15px;margin:10px 0;background:var(--panel3)}
+  .dim h4{margin:0 0 5px;font-size:14px;display:flex;justify-content:space-between;gap:10px;align-items:center}
+  .prio{border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:12px;padding:13px 15px;margin:10px 0;background:var(--panel3)}
+  .drill{background:#0a1322;border:1px solid var(--line);border-radius:10px;padding:9px 12px;margin:7px 0;font-size:13.5px}
+  .drillmeta{margin-top:4px;font-size:12.5px;color:var(--muted)}
+  .drillmeta b{color:var(--ink)}
+  .cue{background:rgba(56,189,248,.12);border:1px solid rgba(56,189,248,.35);border-radius:9px;padding:7px 11px;margin:6px 0;font-size:13px;font-style:italic}
+  .onething{margin-top:12px;background:rgba(250,204,21,.12);border:1px solid rgba(250,204,21,.4);border-radius:11px;padding:11px 14px;font-size:14px}
+  .onething-tag{display:inline-block;font-weight:700;font-style:normal;margin-right:6px}
+  .review{display:grid;grid-template-columns:200px 1fr;gap:14px;border:1px solid var(--line);border-radius:12px;padding:12px;margin:10px 0;background:var(--panel3);align-items:start}
+  @media(max-width:680px){.review{grid-template-columns:1fr}}
+  .review img{width:100%;border-radius:9px;display:block}
+  table.sessions{width:100%;border-collapse:collapse;font-size:13px}
+  table.sessions th,table.sessions td{border:1px solid var(--line);padding:8px 10px;text-align:left}
+  table.sessions th{background:var(--panel3);color:var(--muted);font-weight:600}
+  @media(max-width:600px){
+    table.cardify,table.cardify tbody,table.cardify tr,table.cardify td{display:block;width:100%}
+    table.cardify thead{display:none}
+    table.cardify tr{border:1px solid var(--line);border-radius:12px;margin:0 0 10px;padding:8px 12px;background:var(--panel3)}
+    table.cardify td{border:none;padding:4px 0;display:flex;justify-content:space-between;gap:14px;text-align:right;font-size:13px}
+    table.cardify td::before{content:attr(data-label);color:var(--muted);font-weight:600;text-align:left;flex:0 0 auto}
+    table.cardify td:first-child{font-weight:700;font-size:14px;border-bottom:1px solid var(--line);padding-bottom:7px;margin-bottom:4px;display:block;text-align:left}
+    table.cardify td:first-child::before{content:""}
+  }
+
+  .spinner{width:16px;height:16px;border:3px solid rgba(255,255,255,.25);border-top-color:#fff;border-radius:50%;display:inline-block;animation:spin .9s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .skeleton{height:14px;border-radius:7px;background:linear-gradient(90deg,#16243a,#1d2f49,#16243a);background-size:200% 100%;animation:sh 1.3s infinite;margin:8px 0}
+  @keyframes sh{0%{background-position:200% 0}100%{background-position:-200% 0}}
+  .progbar{height:8px;border-radius:6px;background:var(--panel3);overflow:hidden;border:1px solid var(--line)}
+  .progbar > i{display:block;height:100%;background:var(--grad);transition:width .2s}
+  .muted{color:var(--muted)} hr{border:none;border-top:1px solid var(--line);margin:14px 0}
+  .stage-msg{display:flex;align-items:center;gap:10px;font-size:14px;color:var(--ink);margin-top:8px}
+
+  /* ---- light theme (toggle) ---- */
+  body.light{
+    --panel:#ffffff;--panel2:#f6f9fc;--panel3:#eef3f9;
+    --ink:#10192a;--muted:#55647e;--faint:#8694aa;
+    --line:#dce3ee;--line2:#c6d1e0;
+    --good:#1a9d57;--dev:#2a7fd0;--needs:#d6455f;--na:#6b7890;--warn:#b07916;
+    --shadow:0 10px 28px rgba(30,55,100,.10);--shadow2:0 4px 14px rgba(30,55,100,.08);
+    background:#e9eff7;color:var(--ink);
+  }
+  body.light .stepper{background:rgba(255,255,255,.82)}
+  body.light .drill{background:#f0f4f9}
+  body.light .kbd{background:#eef3f9;color:#10192a}
+  body.light .spinner{border-color:rgba(0,0,0,.2);border-top-color:#10192a}
+  body.light .guard{color:#6e4e0c;background:rgba(255,186,73,.16);border-color:rgba(176,121,26,.45)}
+  body.light .hintbox{color:#1c4e80;background:rgba(58,169,255,.10);border-color:rgba(42,127,208,.35)}
+  body.light .err{color:#a01726;background:rgba(214,69,95,.10);border-color:rgba(214,69,95,.4)}
+  .wrap.big{zoom:1.18}
+  details.sect>summary{cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px;font-weight:700;font-size:16px}
+  details.sect>summary::-webkit-details-marker{display:none}
+  details.sect .chev{margin-left:auto;transition:transform .15s;color:var(--muted)}
+  details.sect[open]>summary .chev{transform:rotate(180deg)}
+  details.sect .sect-body{margin-top:12px}
+  @media(max-width:560px){
+    .wrap{padding:16px 12px 70px}
+    h1{font-size:21px} .sub{font-size:13px}
+    .frame,.frame img{width:122px}
+    .report-head h2{font-size:18px}
+    .review img{max-height:200px}
+    .topbar{gap:8px} .topbar h1{font-size:19px} .sub{display:none}
+    .profsel{max-width:44vw}
+    table.sessions{font-size:12px}
+    table.sessions th,table.sessions td{padding:6px 7px}
+    .settings-modal{padding:12px 8px}
+    .card{padding:15px 14px}
+  }
+  @media print{
+    @page{margin:12mm}
+    *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    body{background:#fff;color:#000} .noprint{display:none!important}
+    .wrap{max-width:none;padding:0}
+    .topbar{margin-bottom:4px} .logo{box-shadow:none}
+    .card{box-shadow:none;border:1px solid #ccc;background:#fff;color:#000;margin:8px 0;padding:10px 12px;break-inside:avoid;page-break-inside:avoid}
+    .card h2{font-size:14px;margin:0 0 8px}
+    .dim,.prio,.drill,.review{background:#fff;border-color:#ccc;break-inside:avoid;page-break-inside:avoid;margin:6px 0}
+    .cue{background:#eef7ff;border:1px solid #b9ddf5;color:#000;break-inside:avoid}
+    .onething{background:#fffbe6;border:1px solid #ecd98a;color:#000;break-inside:avoid}
+    .drillmeta,.drillmeta b{color:#222}
+    .report-head{background:#eef6ff;color:#000;break-inside:avoid} .report-head h2{font-size:18px} .report-head h2,.report-head p{color:#000}
+    .chip{border:1px solid #999} .review img{max-height:120px;width:auto}
+    details.sect .sect-body{display:block!important} details.sect .chev{display:none}
+    h1{font-size:20px} p,.dim div,.drill{font-size:11.5px}
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<video id="scratchVideo" style="display:none" muted playsinline crossorigin="anonymous"></video>
+<canvas id="scratchCanvas" style="display:none"></canvas>
+
+<!-- plain-JS diagnostic bootstrap: turns a silent blank page into a clear message -->
+<script>
+(function(){
+  function show(title,msg,extra){
+    var r=document.getElementById('root'); if(!r) return;
+    r.innerHTML='<div style="max-width:700px;margin:48px auto;padding:22px;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;'
+      +'color:#eaf1fb;background:#101b2e;border:1px solid #2a3d5c;border-radius:14px;line-height:1.55">'
+      +'<h2 style="margin:0 0 8px">🏊 Swim Coach AI couldn’t start</h2>'
+      +'<p style="color:#ffb9c2;margin:0 0 10px">'+title+'</p>'
+      +(msg?'<pre style="white-space:pre-wrap;color:#9bacc7;font-size:12.5px;background:#0a1220;padding:10px;border-radius:8px;border:1px solid #1f2f48;overflow:auto">'+msg+'</pre>':'')
+      +(extra||'')+'</div>';
+  }
+  window.__swimlensShow=show;
+  function mounted(){var r=document.getElementById('root');return r&&r.querySelector('.wrap');}
+  window.addEventListener('error',function(e){
+    var info=((e.error&&e.error.stack)||e.message||'')+(e.filename?('\n'+e.filename+':'+e.lineno):'');
+    if(mounted()){console.error('Swim Coach AI error:',info);return;} // app is running — don't wipe it for a minor error
+    show('A script error stopped the app.',info);
+  });
+  window.addEventListener('unhandledrejection',function(e){
+    var info=(e.reason&&(e.reason.stack||e.reason.message))||String(e.reason);
+    if(mounted()){console.error('Swim Coach AI background error:',info);return;}
+    show('A background task failed.',info);
+  });
+  window.addEventListener('load',function(){
+    setTimeout(function(){
+      var r=document.getElementById('root'); if(!r||r.childNodes.length>0) return; // app rendered fine
+      var miss=[]; if(typeof React==='undefined')miss.push('React'); if(typeof ReactDOM==='undefined')miss.push('ReactDOM'); if(typeof Babel==='undefined')miss.push('Babel');
+      if(miss.length){
+        show('Couldn’t load required libraries: '+miss.join(', ')+'.',
+          'These load from the internet (unpkg.com). You appear to be offline, or a network/extension is blocking the CDN.',
+          '<p style="color:#9bacc7;font-size:13px;margin:10px 0 0">Fix: connect to the internet and reload, or serve the file from a local server.</p>');
+      } else {
+        show('Libraries loaded, but the app didn’t render.',
+          'This usually means a code error during start-up.',
+          '<p style="color:#9bacc7;font-size:13px;margin:10px 0 0">Open the browser console (F12, then the Console tab) and send me the first red error — I’ll fix it.</p>');
+      }
+    },4500);
+  });
+})();
+</script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useRef, useEffect, useMemo } = React;
+const STATIC_DIRECT = true;
+
+/* ===================== constants ===================== */
+const STROKES=[{id:"freestyle",label:"Freestyle"},{id:"backstroke",label:"Backstroke"},{id:"breaststroke",label:"Breaststroke"},{id:"butterfly",label:"Butterfly"}];
+const LEVELS=[{id:"learn",label:"Learn-to-swim"},{id:"developing",label:"Swim school / developing"},{id:"club",label:"Club age-group"},{id:"competitive",label:"Competitive"}];
+const COURSES=[{id:"SCY",label:"25 yd \u00b7 short course (SCY)"},{id:"SCM",label:"25 m \u00b7 short course (SCM)"},{id:"LCM",label:"50 m \u00b7 long course (LCM)"},{id:"SC33",label:"33\u2153 m \u00b7 short course"}];
+
+const SAMPLE_META={name:"",age:"10",sex:"female",level:"developing",stroke:"freestyle",course:"SCM",
+  t50:"45.30",t100:"1:41.32",splits:"",
+  notes:"fades on the second 50 of the 100; backstroke is much slower than freestyle relative to peers."};
+
+const REFERENCE={
+  freestyle:[
+    {phase:"Hand entry",ideal:"Fingertips enter quietly ~shoulder-width then extend forward under the surface to full length before any pull. No crossover past the midline, no thumb-first slap. Front-quadrant timing: the lead hand holds out front until the other arm catches."},
+    {phase:"Catch / early forearm",ideal:"Wrist and elbow stay high while the fingertips tip down — early vertical forearm (EVF). Forearm and hand face straight back and anchor the water before any backward push. No dropped elbow, no pressing down or straight-arm pull."},
+    {phase:"Mid-pull",ideal:"Hand accelerates straight back just outside the bodyline, elbow ~100–120°, pressing water toward the feet. Fastest through the back third; the hand exits cleanly at the hip and never decelerates."},
+    {phase:"Breath",ideal:"Rotate to breathe into the bow-wave trough with one goggle in; head and spine move as one unit, eyes down and slightly back. Exhale fully underwater so the breath is just a quick inhale; the head returns before it breaks the line."},
+    {phase:"Recovery",ideal:"Driven by body rotation, a relaxed high elbow leads with a loose hand. Smooth and quick at the front so tempo and rhythm hold — no pause, no wide muscled swing."},
+    {phase:"Kick",ideal:"Compact flutter initiated from the hips with loose ankles and pointed toes; beat (2/4/6) matched to the event. Heels just break the surface and the legs stay inside the bodyline (no big bicycle kick)."},
+    {phase:"Body line",ideal:"Long torpedo — crown of the head down, press the chest so the hips and heels ride high at the surface. Tight core, minimal side-to-side snake, one line from fingertips to toes."},
+    {phase:"Push-off / breakout",ideal:"Streamline tight (hands stacked, biceps squeezing the ears), then underwater dolphin kick from the core under the bow wave. Accelerate off the wall, hold streamline near top speed, and take the first stroke as you surface — never glide to a stop."},
+    {phase:"Turn (flip)",ideal:"Carry speed into the wall (no glide-in), fast compact somersault, plant the feet ~shoulder-width and push off in a tight streamline on the side/back into underwater dolphins before breaking out."},
+  ],
+  backstroke:[
+    {phase:"Body line",ideal:"Flat on the back with water at the hairline, ears in, chin slightly tucked; hips and chest up so the body planes — not a sitting/piked position. A still head is the anchor."},
+    {phase:"Catch",ideal:"Pinky enters first directly above the shoulder; set an early bent-elbow catch (~90–120°) just under the surface and press water toward the feet — not a straight-arm windmill or a push to the bottom."},
+    {phase:"Rotation",ideal:"Long-axis rotation driven from the hips/core, ~30–45° each side around a still head; shoulders and hips rotate together to set the catch and free the recovery."},
+    {phase:"Kick",ideal:"Continuous flutter from the hips, fast and compact, toes pointed and ankles loose; a steady surface boil, legs inside the bodyline. A strong kick supports rotation and the planing line."},
+    {phase:"Recovery",ideal:"A straight, relaxed arm swings vertically over the shoulder, thumb out / pinky in to enter; tempo matched side to side."},
+    {phase:"Underwater / breakout",ideal:"Off every wall: tight streamline on the back and underwater dolphin kick from the core toward ~10–12 m or top speed, then a clean breakout with no glide or hesitation."},
+    {phase:"Turn",ideal:"Controlled freestyle-position approach into a legal touch, fast somersault, push off on the back in streamline into underwater dolphins before breaking out."},
+  ],
+  breaststroke:[
+    {phase:"Streamline / glide",ideal:"One full extension and glide each stroke — body long, flat and quiet between pulls. This is where speed is held; each stroke should cover maximum distance."},
+    {phase:"Pull",ideal:"Out-sweep to just outside the shoulders, then a high-elbow in-sweep that stays in front of the chest and accelerates the hands forward into the shoot. The hands never pull back past the shoulders."},
+    {phase:"Timing",ideal:"Pull–breathe–kick–glide in sequence: as the hands shoot forward the legs finish the kick, then hold a streamlined glide. One pull per kick, body driven forward (not up)."},
+    {phase:"Kick",ideal:"Heels drawn to the seat with knees inside the hips, feet turned out (dorsiflexed) and whipped back-and-together to full extension; no scissor or flutter. A quick snapping finish."},
+    {phase:"Head / breath",ideal:"The head rises naturally with the in-sweep (driven by the pull, not lifted by the neck) and returns into line on the shoot — eyes down and forward, spine long."},
+    {phase:"Pull-out (underwater)",ideal:"Off each wall: streamline glide, one full pull to the thighs, one (legal) dolphin kick, hands recover close to the body, one breaststroke kick, and break out before slowing."},
+    {phase:"Turn",ideal:"Carry speed to a legal two-hand touch, fast hips-under turn, and push off in tight streamline into the pull-out sequence."},
+  ],
+  butterfly:[
+    {phase:"Body wave",ideal:"Undulation initiated from the chest/sternum and passed through the hips — a small, forward-driving wave, not a big back-arch. Stay long; the body travels forward, not up and down."},
+    {phase:"Catch",ideal:"High-elbow early vertical forearm: the hands press out then back together under the body, forearms anchored and accelerating to the hips. No dropped-elbow press-down."},
+    {phase:"Recovery",ideal:"Low, relaxed arms sweep forward just over the surface with a clean entry at shoulder width; led by rhythm, not muscled."},
+    {phase:"Breath",ideal:"Chin low and forward (sneak the breath); the head leads up early and returns to the water before the arms enter — breathe without lifting the chest or stalling the line."},
+    {phase:"Kick",ideal:"Two dolphin kicks per arm cycle from the core: a bigger kick as the hands enter and a smaller one as they finish the pull. Whip from the hips, feet together."},
+    {phase:"Underwater / breakout",ideal:"Tight streamline and powerful underwater dolphin kicks from the core off every wall toward top speed, then break out into the first stroke without gliding."},
+    {phase:"Turn",ideal:"A legal two-hand touch carrying speed, a fast compact turn, and a streamlined push-off into underwater dolphins before breaking out."},
+  ],
+};
+
+const SYSTEM_ANALYSIS=`You are an Olympic-level swimming coach (elite/national-team background) analyzing a swimmer's stroke from a few still frames plus their details and race times. Bring real technical depth and stroke-specific models: freestyle = early vertical forearm (EVF) catch + hip-driven long-axis rotation + front-quadrant timing + tight bodyline; backstroke = flat planing body, steady head, bent-elbow catch, hip-driven rotation; breaststroke = pull-breathe-kick-glide timing with a long line and forward (not up) drive; butterfly = chest-driven undulation with a 2-kick rhythm. Guiding principle: speed comes from REDUCING DRAG first (bodyline, head, streamline), THEN improving propulsion (catch/kick), THEN sustaining it (tempo/conditioning).
+
+ADAPT TO THE SWIMMER using age + level: for young or learn-to-swim/developing swimmers stay skill-first, safe, encouraging and age-appropriate with no heavy-load training (long-term athlete development); for club/competitive swimmers give full elite technical detail and honest, specific feedback. Reason only from visible positions; say when something cannot be judged from stills. Use any labeled frame phases. Never comment on body shape; not medical advice.
+
+DIAGNOSE ROOT CAUSES, not symptoms: most faults are downstream of bodyline, head position or timing (a dropped-elbow catch often comes from over-reaching or late rotation; a hand crossover from a misaligned breath; sinking legs from a lifted head or a kick from the knees). For each dimension name the underlying cause when you can. Identify the KEYSTONE fault — the single fix that unlocks the most others — and put it in one_thing.
+
+Evaluate the dimensions provided (they include streamline/bodyline, the propulsive phases, rotation/undulation, kick, breathing, stroke efficiency/DPS, underwaters & breakouts, and walls/turns). Treat underwaters and turns seriously — they are often the biggest, most-neglected time gains. Use cv_metrics if given (stroke rate, catch elbow, body-line, symmetry, breaths): cite the actual numbers as evidence but treat them as single-camera estimates and combine with the stills. Use race times for a RACE READ: estimate pace per 50, second-50 fade (speed vs endurance/pacing), the balance of distance-per-stroke vs stroke-rate, and the likely contribution of underwaters/turns.
+
+For each dimension give: an observation citing what is visible; a rating; a score 0-100 (90+ elite, 70-89 solid, 50-69 developing, 30-49 needs work, ~20 with rating "cannot tell from stills" when unclear); a root_cause (the underlying driver, or ""); the single best fix; and a short EXTERNAL-FOCUS poolside cue (cue the effect on the water or space, e.g. "press the water back to the wall behind you" or "swim through a long narrow tube", not internal joint instructions). Also surface 2-3 genuine strengths to reinforce. Output ONLY valid JSON, no code fences:
+{"summary":"2-3 sentences, the coach's overall read","one_thing":"the keystone fix that unlocks the most, one sentence","strengths":["...","..."],"dimensions":[{"name":"...","observation":"...","rating":"strength | developing | needs work | cannot tell from stills","score":0,"root_cause":"underlying driver or empty","improve":"specific fix","cue":"external-focus poolside cue"}],"race_model":"pacing + DPS/stroke-rate balance + underwater/turn read from the times, or empty string","performance_note":"or empty string","film_next":"which camera angle or skill to film next for a deeper look","caveats":"..."}`;
+
+const SYSTEM_PLAN=`You are an Olympic-level swimming coach writing a training plan from a technique analysis (swimmer details, times, per-dimension assessment with root causes). Coach like a pro: fix ROOT CAUSES first and in the right order (drag/bodyline and timing before adding power), use proven drills each with a clear purpose, and prescribe in a structured cycle rather than random sets.
+
+ADAPT TO AGE + LEVEL: for young/developing swimmers keep it skill-first, fun, safe and low-load (technique, streamlines, kick, skills and games — no heavy anaerobic work); for club/competitive swimmers give real prescription (distances, intervals, intensity intent) appropriate to their event. Always technique-first.
+
+Pick the 2-3 highest-leverage priorities, targeting the keystone/root causes. For each: why it matters (plain words), a short EXTERNAL-FOCUS poolside cue, and 1-2 named drills. Each drill needs: name, a one-line how-to, the purpose (what it trains), a dose appropriate to age/level (e.g. "4 x 50m drill/swim by 25, 20s rest"), a success_check, and a progression. INCLUDE underwater dolphin kick / streamline work and a wall/turn focus when relevant — these are large, neglected time-savers. Give race_strategy: concrete pacing plus distance-per-stroke or stroke-count targets and an underwater/breakout plan derived from their times. Give a simple periodization of 3 blocks (e.g. Technique/foundation -> Build -> Sharpen/race-specific), each with weeks, a focus and a one-line sample emphasis, scaled to level (for young swimmers frame these as gentle progressive phases, never heavy load). Then a focused practice_plan (focus + a handful of sets), 2-3 age/level-appropriate dryland exercises (bodyweight for young; core/mobility/strength as level rises, no maxing for kids), 2-3 games/challenges that train the priority, and 2-3 parent_tips (frame as coach/self tips for older swimmers). Output ONLY valid JSON, no code fences:
+{"top_priorities":[{"priority":"...","why_it_matters":"...","cue":"external-focus cue","drills":[{"name":"...","how":"...","purpose":"...","dose":"...","success_check":"...","progression":"..."}]}],"race_strategy":"pacing, DPS/stroke-count targets and underwater/turn plan, or empty","periodization":[{"block":"Technique / foundation","weeks":"e.g. Weeks 1-3","focus":"...","sample":"one-line emphasis"}],"weekly_focus":[{"week":"Weeks 1-2","focus":"...","main_drill":"..."}],"practice_plan":{"focus":"...","sets":[{"name":"...","detail":"..."}]},"dryland":[{"name":"...","how":"...","dose":"..."}],"games":["...","..."],"parent_tips":["...","..."]}`;
+
+/* ===================== helpers ===================== */
+function parseTimeToSec(t){
+  if(!t) return null; t=String(t).trim();
+  if(t.includes(":")){const[m,s]=t.split(":");const mm=parseFloat(m),ss=parseFloat(s);if(isNaN(mm)||isNaN(ss))return null;return mm*60+ss;}
+  const v=parseFloat(t);return isNaN(v)?null:v;
+}
+function fmtSec(s){if(s==null)return"—";const m=Math.floor(s/60),r=(s-m*60);return m>0?`${m}:${r.toFixed(2).padStart(5,"0")}`:r.toFixed(2);}
+function angleDeg(a,b,c){if(!a||!b||!c)return null;const v1={x:a.x-b.x,y:a.y-b.y},v2={x:c.x-b.x,y:c.y-b.y};
+  const d=v1.x*v2.x+v1.y*v2.y,m1=Math.hypot(v1.x,v1.y),m2=Math.hypot(v2.x,v2.y);if(!m1||!m2)return null;
+  let cos=Math.max(-1,Math.min(1,d/(m1*m2)));return Math.round(Math.acos(cos)*180/Math.PI);}
+function lineToHorizontal(a,b){if(!a||!b)return null;return Math.round(Math.abs(Math.atan2(b.y-a.y,b.x-a.x)*180/Math.PI));}
+function ratingClass(r){const s=(r||"").toLowerCase();if(s.startsWith("strength"))return"strength";if(s.startsWith("develop"))return"developing";if(s.includes("cannot"))return"na";return"needs";}
+function ratingIcon(r){return {strength:"✓",developing:"↗",needs:"!",na:"?"}[ratingClass(r)]||"";}
+const STROKE_DIMS={
+  freestyle:["Body position & streamline","Head & breathing","Catch & early vertical forearm","Body rotation (hip-driven)","Kick","Recovery & tempo","Stroke efficiency (DPS)","Underwaters & breakout","Walls & turns"],
+  backstroke:["Body position (flat, hips up)","Head stillness","Catch & pull (bent-elbow)","Shoulder/hip rotation","Kick","Hand entry/exit & tempo","Stroke efficiency (DPS)","Underwaters & breakout","Walls & turns"],
+  breaststroke:["Body position & glide","Stroke timing (pull-breathe-kick-glide)","Pull (out/in-sweep, high elbow)","Whip kick","Head & breath","Stroke efficiency (DPS)","Underwater pull-out","Walls & turns"],
+  butterfly:["Body undulation (chest-driven)","Timing (2 kicks/cycle)","Catch & early vertical forearm","Dolphin kick","Breath timing","Stroke efficiency (DPS)","Underwaters & breakout","Walls & turns"],
+};
+const GLOSSARY=[
+  {term:"Streamline",def:"The tight, pencil-straight shape off every wall — hands stacked, arms squeezing the ears, body long. The lowest-drag position in the pool; the foundation of fast swimming."},
+  {term:"Bodyline / drag",def:"How straight and level the body rides. A long, flat line with hips and heels near the surface slips through the water; a bent or head-up line drags. Reducing drag is usually the fastest way to drop time."},
+  {term:"EVF — Early Vertical Forearm",def:"A 'high-elbow catch'. The elbow stays high near the surface while the fingertips tip down, so the whole forearm and hand face backward and grip the water early — instead of a dropped elbow that slips."},
+  {term:"Catch",def:"The moment at the front of the stroke where the hand and forearm first 'grab' the water before pulling. A good catch sets up the whole pull."},
+  {term:"DPS — Distance Per Stroke",def:"How far the swimmer travels per arm stroke. More distance per stroke (fewer strokes per length) means a more efficient stroke. Speed = distance-per-stroke × stroke rate."},
+  {term:"Stroke rate / tempo",def:"How fast the arms turn over (strokes per minute). The art is balancing tempo with distance-per-stroke — turning over faster only helps if the stroke still holds water."},
+  {term:"Stroke count / SWOLF",def:"Counting strokes per length is a simple efficiency check. SWOLF adds strokes + seconds for a length — a lower number means you're covering the length with less effort."},
+  {term:"Front-quadrant timing",def:"In freestyle/backstroke, the lead hand stays out in front until the other arm enters the catch — keeping the body long and reducing dead spots and drag."},
+  {term:"Long-axis rotation",def:"Freestyle and backstroke rotate around the spine (the long axis), driven from the hips. Good rotation powers the catch and frees an easy recovery; swimming flat wastes power."},
+  {term:"Undulation (short-axis)",def:"Butterfly and breaststroke move in a forward wave started from the chest. It should drive the body forward, not bob it up and down."},
+  {term:"Underwater dolphin kick — 'the 5th stroke'",def:"The fast underwater kicking off each wall in a tight streamline. Often the quickest part of a race and the most under-trained — big, easy time gains hide here."},
+  {term:"Breakout",def:"The first stroke as the swimmer surfaces after the underwater. A good breakout carries the wall's speed into the swim with no glide or stall."},
+  {term:"Pull-out (breaststroke)",def:"The underwater sequence off a breaststroke wall: streamline glide, one full pull to the thighs, one dolphin kick, recover, one breaststroke kick, then break out."},
+  {term:"Two-beat / six-beat kick",def:"How many leg kicks happen per arm-stroke cycle. Distance swimmers often use a lighter two-beat kick; sprinters a faster six-beat. It's matched to the event."},
+  {term:"External-focus cue",def:"A coaching cue about the effect on the water or space ('press water to the wall behind you') rather than a body part ('bend your elbow'). Research shows these stick better and transfer faster."},
+  {term:"Periodization",def:"Building training in phases — e.g. Technique/foundation, then Build, then Sharpen/race-specific — so skills are layered in the right order instead of training everything at once."},
+  {term:"Dryland",def:"Training out of the water (mobility, core, bodyweight strength). Supports the stroke and injury-resistance; kept light and playful for young swimmers."},
+];
+
+const FAULTS={
+  freestyle:[
+    {fault:"Legs sink / hips drag",cause:"Head lifted or eyes forward, or pressing down on the water in the catch.",fix:"Look straight down, press the chest so the hips rise, exhale fully underwater.",cue:"hide your head between your arms"},
+    {fault:"Dropped elbow in the catch",cause:"Over-reaching, or rotating late so the arm is past vertical before it grabs.",fix:"Set a high-elbow forearm early and rotate into the catch before pressing back.",cue:"reach over a barrel"},
+    {fault:"Hand crosses the midline",cause:"Over-reaching, or a misaligned breath pulling the lead arm across.",fix:"Enter at shoulder width; keep the breath aligned with body rotation.",cue:"swim inside two lanes"},
+    {fault:"Breathing lifts the head",cause:"Lifting instead of rotating to breathe; holding the breath then exhaling late.",fix:"Rotate with the body, keep one goggle in, exhale steadily underwater.",cue:"sip from the bow wave"},
+    {fault:"Dead spot / over-glide out front",cause:"Pausing the lead hand too long before the catch.",fix:"Begin the catch as the other hand enters to hold rhythm.",cue:"never stop the front hand"},
+  ],
+  backstroke:[
+    {fault:"Hips and seat sink",cause:"Head tipped too far back or a weak, knee-driven kick.",fix:"Tuck the chin slightly, drive a steady kick from the hips, lift the hips up.",cue:"carry a cup of water on your belly"},
+    {fault:"Straight-arm / over-reached catch",cause:"Windmilling without setting a bent elbow.",fix:"Catch with a bent elbow just under the surface and press toward the feet.",cue:"press water to your feet"},
+    {fault:"Snaking / wobbling",cause:"Head moving or no long-axis rotation.",fix:"Keep the head still and rotate from the hips, shoulders following.",cue:"freeze your head, roll your hips"},
+  ],
+  breaststroke:[
+    {fault:"Pulling past the shoulders",cause:"A big, long pull instead of a compact in-sweep.",fix:"Keep the hands in front, quick in-sweep, then shoot forward.",cue:"scoop and shoot, hands stay in front"},
+    {fault:"Bobbing up to breathe",cause:"Lifting head and shoulders instead of letting the pull raise you.",fix:"Let the in-sweep lift you and drive the body forward, not up.",cue:"breathe forward, not up"},
+    {fault:"Scissor / uneven kick",cause:"A foot not turned out, or knees dropping too wide.",fix:"Heels to the seat, feet turned out, whip back and together.",cue:"point your heels out, then snap"},
+    {fault:"No glide",cause:"Rushing into the next stroke.",fix:"Full extension and one held streamline each stroke.",cue:"stretch and hide for a count"},
+  ],
+  butterfly:[
+    {fault:"Big up-and-down, little forward travel",cause:"Diving the head/chest too deep with a large back-arch.",fix:"Small chest-led press; send the wave forward, stay long.",cue:"press a small wave forward"},
+    {fault:"Arms muscle the recovery / stalls",cause:"Lost rhythm or missing the 2-kick timing.",fix:"Two kicks per cycle: one as the hands enter, one as they finish.",cue:"kick your hands into the water"},
+    {fault:"Head and chest pop up to breathe",cause:"A late or high breath that breaks the line.",fix:"Sneak a low, chin-forward breath; head returns before the hands enter.",cue:"chin on the water, eyes down"},
+  ],
+};
+const DRILLS={
+  freestyle:[
+    {name:"6-1-6",how:"On your side in streamline, 6 kicks, then one stroke to the other side.",purpose:"rotation, balance & bodyline"},
+    {name:"Catch-up",how:"One hand waits out front until the other touches it before pulling.",purpose:"front-quadrant timing & a long line"},
+    {name:"Fingertip drag",how:"Drag the fingertips along the surface through the recovery.",purpose:"high-elbow recovery & relaxation"},
+    {name:"Front scull",how:"Small figure-8 sculls out front with vertical forearms.",purpose:"feel for the early-vertical-forearm catch"},
+    {name:"Streamline dolphins off the wall",how:"3-5 underwater dolphin kicks in a tight streamline each wall.",purpose:"underwaters & breakout speed"},
+  ],
+  backstroke:[
+    {name:"Single-arm backstroke",how:"One arm at the side, swim with the other, focusing the catch.",purpose:"bent-elbow catch & rotation"},
+    {name:"Kick on side, 6-kick switch",how:"Kick on your side, switch sides with one stroke.",purpose:"rotation & bodyline"},
+    {name:"Cup on the forehead",how:"Balance a cup while kicking on your back.",purpose:"head stillness & a flat line"},
+  ],
+  breaststroke:[
+    {name:"2 kicks + 1 pull",how:"Two kicks in streamline, then one full stroke.",purpose:"kick power & glide"},
+    {name:"In-sweep scull",how:"Scull the in-sweep with a pull-buoy between the legs.",purpose:"a compact, high-elbow pull"},
+    {name:"3 strokes + glide",how:"Three strokes, then hold a long streamlined glide.",purpose:"distance per stroke & timing"},
+  ],
+  butterfly:[
+    {name:"Single-arm fly",how:"One arm flies with dolphin timing, the other extended.",purpose:"timing & catch without fatigue"},
+    {name:"3 kicks + 1 pull",how:"Three dolphin kicks, then one arm pull.",purpose:"core-driven kick & rhythm"},
+    {name:"Body dolphin (no arms)",how:"Streamline dolphin on the surface, led by the chest.",purpose:"undulation from the chest"},
+  ],
+};
+
+function safeJSON(text){
+  let clean=String(text).replace(/```json|```/g,"").trim();
+  const a=clean.indexOf("{"),b=clean.lastIndexOf("}");
+  const candidate=(a>=0&&b>=0&&b>a)?clean.slice(a,b+1):clean;
+  try{ return JSON.parse(candidate); }catch(e){ return looseParseJSON(clean); }
+}
+/* repair a truncated/loose JSON reply (e.g. response cut off mid-array by the token limit) */
+function looseParseJSON(text){
+  let s=String(text).replace(/```json|```/g,"").trim();
+  const i=s.search(/[\{\[]/); if(i>0)s=s.slice(i);
+  try{ return JSON.parse(s); }catch(e){}
+  for(let end=s.length; end>1; end--){
+    let frag=s.slice(0,end).replace(/[,\s]+$/,"");
+    if(!frag)continue;
+    let inStr=false,esc=false; const open=[];
+    for(let k=0;k<frag.length;k++){const c=frag[k];
+      if(inStr){ if(esc)esc=false; else if(c==="\\")esc=true; else if(c==='"')inStr=false; }
+      else { if(c==='"')inStr=true; else if(c==="{")open.push("}"); else if(c==="[")open.push("]"); else if(c==="}"||c==="]")open.pop(); }
+    }
+    let fixed=frag; if(inStr)fixed+='"';
+    for(let k=open.length-1;k>=0;k--)fixed+=open[k];
+    try{ return JSON.parse(fixed); }catch(_){}
+  }
+  throw new Error("Could not read the model's reply as JSON.");
+}
+/* map any model-returned label to the closest allowed phase (tolerant of wording/case) */
+function matchPhaseTo(label,allowed){
+  if(label==null)return null;
+  const norm=s=>String(s).toLowerCase().replace(/[^a-z]+/g," ").trim();
+  const L=norm(label); if(!L)return null;
+  for(const p of allowed){if(norm(p)===L)return p;}
+  for(const p of allowed){const P=norm(p);if(P&&(P.includes(L)||L.includes(P)))return p;}
+  const lw=new Set(L.split(" ").filter(Boolean));
+  let best=null,score=0;
+  for(const p of allowed){const ov=norm(p).split(" ").filter(Boolean).filter(w=>lw.has(w)).length;if(ov>score){score=ov;best=p;}}
+  return score>0?best:null;
+}
+
+/* ===================== frame extraction ===================== */
+async function extractFrames(file,intervalSec,maxWidth,quality,onProgress){
+  const video=document.getElementById("scratchVideo"),canvas=document.getElementById("scratchCanvas"),ctx=canvas.getContext("2d");
+  const url=URL.createObjectURL(file),frames=[];
+  await new Promise((res,rej)=>{video.onloadedmetadata=()=>res();video.onerror=()=>rej(new Error("Could not read this video. Try an MP4 (H.264) or MOV."));video.src=url;});
+  const duration=video.duration;if(!isFinite(duration)||duration<=0)throw new Error("Video has no readable duration.");
+  const scale=Math.min(1,maxWidth/(video.videoWidth||maxWidth));
+  canvas.width=Math.round((video.videoWidth||maxWidth)*scale);canvas.height=Math.round((video.videoHeight||maxWidth*0.56)*scale);
+  const times=[];for(let t=0;t<duration;t+=intervalSec)times.push(Math.min(t,Math.max(0,duration-0.05)));
+  for(let i=0;i<times.length;i++){
+    await new Promise(r=>{const f=()=>{video.removeEventListener("seeked",f);r();};video.addEventListener("seeked",f);video.currentTime=times[i];});
+    ctx.drawImage(video,0,0,canvas.width,canvas.height);
+    const d=canvas.toDataURL("image/jpeg",quality);
+    frames.push({time:times[i],dataUrl:d,b64:d.split(",")[1]});
+    onProgress&&onProgress(Math.round(((i+1)/times.length)*100));
+  }
+  URL.revokeObjectURL(url);return{frames,duration};
+}
+async function captureAt(file,t,maxWidth,quality){
+  const video=document.getElementById("scratchVideo"),canvas=document.getElementById("scratchCanvas"),ctx=canvas.getContext("2d");
+  await new Promise(r=>{const f=()=>{video.removeEventListener("seeked",f);r();};video.addEventListener("seeked",f);video.currentTime=t;});
+  const scale=Math.min(1,maxWidth/(video.videoWidth||maxWidth));
+  canvas.width=Math.round((video.videoWidth||maxWidth)*scale);canvas.height=Math.round((video.videoHeight||maxWidth*0.56)*scale);
+  ctx.drawImage(video,0,0,canvas.width,canvas.height);const d=canvas.toDataURL("image/jpeg",quality);
+  return{time:t,dataUrl:d,b64:d.split(",")[1]};
+}
+
+/* ===================== pose (MoveNet) ===================== */
+function loadScript(src){return new Promise((res,rej)=>{const s=document.createElement("script");s.src=src;s.onload=res;s.onerror=()=>rej(new Error("Failed to load "+src));document.head.appendChild(s);});}
+/* draw an image onto a canvas with safe pose-model dimensions (capped, multiples of 32, RGB) */
+function safeInput(img,maxSide){
+  const W=img.naturalWidth||img.width||1,H=img.naturalHeight||img.height||1;
+  const scale=Math.min(1,(maxSide||320)/Math.max(W,H));
+  const w=Math.max(64,Math.round(W*scale/32)*32),h=Math.max(64,Math.round(H*scale/32)*32);
+  const c=document.createElement("canvas");c.width=w;c.height=h;
+  const ctx=c.getContext("2d");ctx.fillStyle="#000";ctx.fillRect(0,0,w,h);ctx.drawImage(img,0,0,w,h);
+  return c;
+}
+function fileToB64(f){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(String(r.result).split(",")[1]);r.onerror=rej;r.readAsDataURL(f);});}
+let poseLibsPromise=null;
+function loadPoseLibs(){
+  if(!poseLibsPromise){poseLibsPromise=(async()=>{
+    if(typeof tf==="undefined"){
+      await loadScript("https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core@4.20.0/dist/tf-core.min.js");
+      await loadScript("https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter@4.20.0/dist/tf-converter.min.js");
+      await loadScript("https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl@4.20.0/dist/tf-backend-webgl.min.js");
+    }
+    if(typeof poseDetection==="undefined"){
+      await loadScript("https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection@2.1.3/dist/pose-detection.min.js");
+    }
+  })();}
+  return poseLibsPromise;
+}
+let detectorPromise=null;
+function getDetector(){if(!detectorPromise){detectorPromise=(async()=>{await loadPoseLibs();await tf.setBackend("webgl");await tf.ready();
+  return poseDetection.createDetector(poseDetection.SupportedModels.MoveNet,{modelType:poseDetection.movenet.modelType.SINGLEPOSE_THUNDER});})();}return detectorPromise;}
+const ADJ=[["left_shoulder","right_shoulder"],["left_shoulder","left_elbow"],["left_elbow","left_wrist"],["right_shoulder","right_elbow"],["right_elbow","right_wrist"],
+  ["left_shoulder","left_hip"],["right_shoulder","right_hip"],["left_hip","right_hip"],["left_hip","left_knee"],["left_knee","left_ankle"],["right_hip","right_knee"],["right_knee","right_ankle"]];
+async function runPose(frame){
+  const detector=await getDetector();const img=new Image();
+  await new Promise((res,rej)=>{img.onload=res;img.onerror=rej;img.src=frame.dataUrl;});
+  const poses=await detector.estimatePoses(img,{maxPoses:1,flipHorizontal:false});
+  const canvas=document.createElement("canvas");canvas.width=img.naturalWidth;canvas.height=img.naturalHeight;
+  const ctx=canvas.getContext("2d");ctx.drawImage(img,0,0);let angles=null,kpd=null;
+  if(poses&&poses[0]&&poses[0].keypoints){
+    const kp={};poses[0].keypoints.forEach(k=>{if(k.score>0.3)kp[k.name]=k;});
+    kpd={kp:kp,W:canvas.width,H:canvas.height};
+    ctx.lineWidth=Math.max(2,canvas.width/220);ctx.strokeStyle="#22d3c0";
+    ADJ.forEach(([a,b])=>{if(kp[a]&&kp[b]){ctx.beginPath();ctx.moveTo(kp[a].x,kp[a].y);ctx.lineTo(kp[b].x,kp[b].y);ctx.stroke();}});
+    ctx.fillStyle="#3aa9ff";Object.values(kp).forEach(k=>{ctx.beginPath();ctx.arc(k.x,k.y,Math.max(3,canvas.width/140),0,7);ctx.fill();});
+    const mid=(a,b)=>a&&b?{x:(a.x+b.x)/2,y:(a.y+b.y)/2}:(a||b);
+    const sh=mid(kp.left_shoulder,kp.right_shoulder),hip=mid(kp.left_hip,kp.right_hip);
+    const eye=mid(kp.left_eye,kp.right_eye)||kp.nose;
+    angles={
+      elbow_left:angleDeg(kp.left_shoulder,kp.left_elbow,kp.left_wrist),
+      elbow_right:angleDeg(kp.right_shoulder,kp.right_elbow,kp.right_wrist),
+      knee_left:angleDeg(kp.left_hip,kp.left_knee,kp.left_ankle),
+      knee_right:angleDeg(kp.right_hip,kp.right_knee,kp.right_ankle),
+      body_line_vs_horizontal:lineToHorizontal(sh,hip),
+      head_above_shoulder:(eye&&sh)?Math.round((sh.y-eye.y)):null,
+    };
+    // --- visual coaching cues drawn on the frame ---
+    const F=Math.max(12,Math.round(canvas.width/38));
+    ctx.font="bold "+F+"px system-ui";ctx.textBaseline="bottom";
+    const txt=(t,x,y,color)=>{ctx.lineWidth=Math.max(3,canvas.width/240);ctx.strokeStyle="rgba(4,12,20,.8)";ctx.strokeText(t,x,y);ctx.fillStyle=color;ctx.fillText(t,x,y);};
+    if(sh&&hip){
+      ctx.strokeStyle="#ffba49";ctx.lineWidth=Math.max(2,canvas.width/200);
+      const dx=hip.x-sh.x,dy=hip.y-sh.y;
+      ctx.beginPath();ctx.moveTo(sh.x-dx*0.45,sh.y-dy*0.45);ctx.lineTo(hip.x+dx*0.45,hip.y+dy*0.45);ctx.stroke();
+      if(angles.body_line_vs_horizontal!=null)txt(angles.body_line_vs_horizontal+"° body-line",(sh.x+hip.x)/2+6,(sh.y+hip.y)/2,"#ffd27a");
+    }
+    if(kp.left_elbow&&angles.elbow_left!=null)txt(angles.elbow_left+"°",kp.left_elbow.x+6,kp.left_elbow.y-4,"#7ef0e2");
+    if(kp.right_elbow&&angles.elbow_right!=null)txt(angles.elbow_right+"°",kp.right_elbow.x+6,kp.right_elbow.y-4,"#7ef0e2");
+  }
+  return{dataUrl:canvas.toDataURL("image/jpeg",0.85),angles:angles,kpd:kpd};
+}
+/* keypoints only (for phase classification), runs on the cropped/whole image */
+async function keypointsFor(dataUrl){
+  const det=await getDetector();const img=new Image();
+  await new Promise((res,rej)=>{img.onload=res;img.onerror=rej;img.src=dataUrl;});
+  const poses=await det.estimatePoses(img,{maxPoses:1,flipHorizontal:false});
+  if(!poses||!poses[0])return null;
+  const kp={};poses[0].keypoints.forEach(k=>{if(k.score>0.3)kp[k.name]=k;});
+  return {kp:kp,W:img.naturalWidth,H:img.naturalHeight};
+}
+/* heuristic freestyle phase from a single pose (rough; user can correct) */
+function classifyPhase(kpd,stroke){
+  if(!kpd||!kpd.kp)return null;
+  const kp=kpd.kp,W=kpd.W||1,H=kpd.H||1;
+  const mid=(a,b)=>a&&b?{x:(a.x+b.x)/2,y:(a.y+b.y)/2}:(a||b);
+  const sh=mid(kp.left_shoulder,kp.right_shoulder),hip=mid(kp.left_hip,kp.right_hip),nose=kp.nose||mid(kp.left_eye,kp.right_eye);
+  if(!sh||!hip)return null;
+  const fwd=Math.sign(((nose?nose.x:sh.x)-hip.x))||1;
+  const U=p=>p?(p.x-sh.x)*fwd:null;
+  const wrists=[kp.left_wrist,kp.right_wrist].filter(Boolean);
+  const elbows=[kp.left_elbow,kp.right_elbow].filter(Boolean);
+  const ankles=[kp.left_ankle,kp.right_ankle].filter(Boolean);
+  const bothWrists=wrists.length===2;
+  const headUp=nose&&(sh.y-nose.y)>0.06*H;
+  const aboveSh=wrists.filter(w=>(sh.y-w.y)>0.05*H);   // wrists above the shoulder line
+  const kneeBent=(function(){const a=[angleDeg(kp.left_hip,kp.left_knee,kp.left_ankle),angleDeg(kp.right_hip,kp.right_knee,kp.right_ankle)].filter(v=>v!=null);return a.length?Math.min.apply(null,a)<130:false;})();
+  const wristsTogether=bothWrists&&Math.hypot(wrists[0].x-wrists[1].x,wrists[0].y-wrists[1].y)<0.16*W;
+  // --- non-freestyle strokes (rough heuristics; AI auto-label is the accurate path) ---
+  if(stroke==="backstroke"){
+    if(aboveSh.length>=1)return "Recovery";
+    const tilt=(kp.left_shoulder&&kp.right_shoulder)?Math.abs(kp.left_shoulder.y-kp.right_shoulder.y):0;
+    if(tilt>0.06*H)return "Rotation";
+    if(kneeBent)return "Kick";
+    if(wrists.some(w=>Math.abs(w.x-sh.x)>0.18*W))return "Catch";
+    return "Body line";
+  }
+  if(stroke==="breaststroke"){
+    if(headUp)return "Head / breath";
+    if(kneeBent&&ankles.length)return "Kick";
+    if(bothWrists&&Math.abs(wrists[0].x-wrists[1].x)>0.28*W)return "Pull";
+    if(wristsTogether)return "Streamline / glide";
+    return "Timing";
+  }
+  if(stroke==="butterfly"){
+    if(aboveSh.length>=2)return "Recovery";
+    if(headUp)return "Breath";
+    if(kneeBent)return "Kick";
+    if(bothWrists&&wrists.every(w=>(w.y-sh.y)>0.02*H))return "Catch";
+    return "Body wave";
+  }
+  // breath: head clearly above the shoulder line
+  if(nose&&(sh.y-nose.y)>0.10*H)return "Breath";
+  if(!wrists.length)return null;
+  let lead=wrists[0];wrists.forEach(w=>{if(U(w)>U(lead))lead=w;});
+  const trail=wrists.find(w=>w!==lead);
+  const uLead=U(lead);
+  // push-off / streamline: both wrists far ahead, close together, body flat
+  if(wrists.length===2){
+    const both=wrists.every(w=>U(w)>0.18*W);
+    const close=Math.hypot(wrists[0].x-wrists[1].x,wrists[0].y-wrists[1].y)<0.12*W;
+    const flat=Math.abs(sh.y-hip.y)<0.10*H;
+    if(both&&close&&flat)return "Push-off / breakout";
+  }
+  // recovery: other arm high (above shoulders) and behind
+  if(trail&&(sh.y-trail.y)>0.04*H&&U(trail)<0)return "Recovery";
+  // entry: leading wrist well ahead, near/above shoulder height
+  if(uLead>0.16*W&&(lead.y-sh.y)<0.06*H)return "Hand entry";
+  // catch: leading wrist ahead, below shoulder, elbow above wrist (high elbow)
+  const leadElbow=elbows.length?elbows.reduce((a,b)=>U(b)>U(a)?b:a):null;
+  if(uLead>0.04*W&&(lead.y-sh.y)>0.02*H&&leadElbow&&leadElbow.y<lead.y)return "Catch / early forearm";
+  // mid-pull: wrist under torso and low
+  if(uLead<=0.06*W&&uLead>-0.10*W&&(lead.y-sh.y)>0.05*H)return "Mid-pull";
+  return "Mid-pull";
+}
+
+/* ===================== multi-swimmer focus (detect / track / crop) ===================== */
+let multiDetectorPromise=null;
+function getMultiDetector(){if(!multiDetectorPromise){multiDetectorPromise=(async()=>{await loadPoseLibs();await tf.setBackend("webgl");await tf.ready();
+  return poseDetection.createDetector(poseDetection.SupportedModels.MoveNet,{modelType:poseDetection.movenet.modelType.MULTIPOSE_LIGHTNING});})();}return multiDetectorPromise;}
+function boxFromKeypoints(kps){
+  const pts=(kps||[]).filter(k=>k.score>0.3);
+  if(pts.length<3)return null;
+  const xs=pts.map(p=>p.x),ys=pts.map(p=>p.y);
+  return {xMin:Math.min(...xs),yMin:Math.min(...ys),xMax:Math.max(...xs),yMax:Math.max(...ys)};
+}
+async function detectSwimmers(frame){
+  const det=await getMultiDetector();
+  const img=new Image();
+  await new Promise((res,rej)=>{img.onload=res;img.onerror=rej;img.src=frame.dataUrl;});
+  const inp=safeInput(img,384);   // multipose needs sane dims (multiples of 32)
+  const poses=await det.estimatePoses(inp,{maxPoses:6});
+  const W=inp.width,H=inp.height,boxes=[];
+  poses.forEach(p=>{const b=boxFromKeypoints(p.keypoints);if(b){
+    const bw=b.xMax-b.xMin,bh=b.yMax-b.yMin; if(bw<6||bh<6)return;
+    boxes.push({...b,cx:(b.xMin+b.xMax)/2,cy:(b.yMin+b.yMax)/2,ncx:(b.xMin+b.xMax)/2/W,ncy:(b.yMin+b.yMax)/2/H,score:p.score||0});
+  }});
+  boxes.sort((a,b)=>a.xMin-b.xMin); // stable left-to-right numbering
+  return {boxes,W,H};
+}
+function boxAspectExcess(b){const w=b.xMax-b.xMin,h=b.yMax-b.yMin;return w<=1?5:Math.max(0,(h/w)-1.1);} // 0=swimmer(flat), big=standing(tall)
+function nearestBox(boxes,target){let best=null,bd=1e9;boxes.forEach(b=>{const d=(b.ncx-target.x)**2+(b.ncy-target.y)**2+boxAspectExcess(b)*0.3;if(d<bd){bd=d;best=b;}});return best;}
+function cropNorm(frame,r,q){
+  return new Promise((res,rej)=>{const img=new Image();img.onload=()=>{
+    const W=img.naturalWidth,H=img.naturalHeight;
+    let x=Math.round(r.x*W),y=Math.round(r.y*H),w=Math.round(r.w*W),h=Math.round(r.h*H);
+    x=Math.max(0,Math.min(W-1,x));y=Math.max(0,Math.min(H-1,y));w=Math.max(1,Math.min(W-x,w));h=Math.max(1,Math.min(H-y,h));
+    const c=document.createElement("canvas");c.width=w;c.height=h;c.getContext("2d").drawImage(img,x,y,w,h,0,0,w,h);
+    const d=c.toDataURL("image/jpeg",q);res({time:frame.time,dataUrl:d,b64:d.split(",")[1]});
+  };img.onerror=rej;img.src=frame.dataUrl;});
+}
+function boxToPaddedNorm(b,W,H,pad){
+  const bw=b.xMax-b.xMin,bh=b.yMax-b.yMin;
+  const x=Math.max(0,b.xMin-bw*pad),y=Math.max(0,b.yMin-bh*pad);
+  const x2=Math.min(W,b.xMax+bw*pad),y2=Math.min(H,b.yMax+bh*pad);
+  return {x:x/W,y:y/H,w:(x2-x)/W,h:(y2-y)/H};
+}
+
+/* ===================== motion metrics (local CV across the whole clip) ===================== */
+let chartJsPromise=null;
+function loadChartJs(){if(!chartJsPromise){chartJsPromise=loadScript("https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js");}return chartJsPromise;}
+function smooth(arr,w){return arr.map((v,i)=>{let s=0,n=0;for(let j=Math.max(0,i-w);j<=Math.min(arr.length-1,i+w);j++){if(arr[j]!=null){s+=arr[j];n++;}}return n?s/n:null;});}
+function statsOf(a){const v=a.filter(x=>x!=null);if(!v.length)return null;const m=v.reduce((x,y)=>x+y,0)/v.length;const sd=Math.sqrt(v.reduce((x,y)=>x+(y-m)**2,0)/v.length);return{mean:Math.round(m),min:Math.round(Math.min(...v)),max:Math.round(Math.max(...v)),sd:Math.round(sd),n:v.length};}
+function countPeaks(sig,times){const vals=sig.filter(v=>v!=null);if(vals.length<5)return{count:0,perMin:null};const mean=vals.reduce((a,b)=>a+b,0)/vals.length;const sd=Math.sqrt(vals.reduce((a,b)=>a+(b-mean)**2,0)/vals.length);const thr=mean+0.25*sd;let peaks=0,last=-1;for(let i=1;i<sig.length-1;i++){if(sig[i]==null||sig[i-1]==null||sig[i+1]==null)continue;if(sig[i]>sig[i-1]&&sig[i]>=sig[i+1]&&sig[i]>thr){if(last<0||times[i]-last>0.3){peaks++;last=times[i];}}}const dur=times[times.length-1]-times[0];return{count:peaks,perMin:dur>0?Math.round(peaks/dur*60):null};}
+function symmetryOf(l,r){const ls=statsOf(l),rs=statsOf(r);if(!ls||!rs)return null;const diff=Math.abs(ls.mean-rs.mean);return{left:ls.mean,right:rs.mean,diff:diff,pct:Math.max(0,Math.round(100-diff/1.8))};}
+const PHASE_COLORS={"Hand entry":"#3aa9ff","Catch / early forearm":"#22d3c0","Mid-pull":"#7c5cff","Breath":"#ffba49","Recovery":"#ff7a8a","Kick":"#4ad991","Body line":"#9bacc7","Push-off / breakout":"#f06dd0","Streamline / glide":"#9bacc7"};
+function phaseColor(p){return PHASE_COLORS[p]||"#2a3d5c";}
+async function poseSeriesFrame(dataUrl,cropNormRect,stroke){
+ try{
+  const detector=await getDetector();
+  let src=dataUrl;
+  if(cropNormRect){const c=await cropNorm({dataUrl:dataUrl,time:0},cropNormRect,0.7);src=c.dataUrl;}
+  const img=new Image();await new Promise((res,rej)=>{img.onload=res;img.onerror=rej;img.src=src;});
+  const inp=safeInput(img,320);   // normalize size so the pose model never gets an awkward tensor shape
+  const poses=await detector.estimatePoses(inp,{maxPoses:1,flipHorizontal:false});
+  if(!poses||!poses[0])return null;
+  const all=poses[0].keypoints, byName={}; all.forEach(k=>byName[k.name]=k);
+  const core=["left_shoulder","right_shoulder","left_hip","right_hip","left_elbow","right_elbow","left_wrist","right_wrist"];
+  const conf=core.map(n=>byName[n]?byName[n].score:0).reduce((a,b)=>a+b,0)/core.length;
+  const nkp=all.filter(k=>k.score>0.3).length;
+  const kp={};all.forEach(k=>{if(k.score>0.3)kp[k.name]=k;});
+  const mid=(a,b)=>a&&b?{x:(a.x+b.x)/2,y:(a.y+b.y)/2}:(a||b);
+  const sh=mid(kp.left_shoulder,kp.right_shoulder),hip=mid(kp.left_hip,kp.right_hip);
+  const nose=kp.nose||mid(kp.left_eye,kp.right_eye);
+  const W=inp.width||1,H=inp.height||1;
+  const wy=[kp.left_wrist,kp.right_wrist].filter(Boolean).map(w=>w.y);
+  const ay=[kp.left_ankle,kp.right_ankle].filter(Boolean).map(a=>a.y);
+  const kL=angleDeg(kp.left_hip,kp.left_knee,kp.left_ankle),kR=angleDeg(kp.right_hip,kp.right_knee,kp.right_ankle);
+  return {bodyLine:lineToHorizontal(sh,hip),
+    elbowL:angleDeg(kp.left_shoulder,kp.left_elbow,kp.left_wrist),
+    elbowR:angleDeg(kp.right_shoulder,kp.right_elbow,kp.right_wrist),
+    knee:(kL!=null?kL:kR),
+    wristTopY:wy.length?Math.min(...wy)/H*100:null,
+    ankleY:ay.length?(ay.reduce((a,b)=>a+b,0)/ay.length)/H*100:null,
+    headRel:(nose&&sh)?(sh.y-nose.y)/H*100:null,
+    phase:classifyPhase({kp:kp,W:W,H:H},stroke),
+    conf:conf,nkp:nkp};
+ }catch(e){ return null; }   // one bad frame must not abort the whole analysis
+}
+/* compute the same metrics from YOLO11-pose keypoints (COCO-17, normalized [x,y,conf]) */
+const COCO17=["nose","left_eye","right_eye","left_ear","right_ear","left_shoulder","right_shoulder","left_elbow","right_elbow","left_wrist","right_wrist","left_hip","right_hip","left_knee","right_knee","left_ankle","right_ankle"];
+function metricsFromKpts(arr,stroke){
+  if(!arr||!arr.length)return null;
+  const kp={};arr.forEach((p,i)=>{ if(p&&p[2]>0.3&&COCO17[i])kp[COCO17[i]]={x:p[0],y:p[1],score:p[2]}; });
+  const core=["left_shoulder","right_shoulder","left_hip","right_hip","left_elbow","right_elbow","left_wrist","right_wrist"];
+  const conf=core.map(n=>kp[n]?kp[n].score:0).reduce((a,b)=>a+b,0)/core.length;
+  const nkp=Object.keys(kp).length;
+  const mid=(a,b)=>a&&b?{x:(a.x+b.x)/2,y:(a.y+b.y)/2}:(a||b);
+  const sh=mid(kp.left_shoulder,kp.right_shoulder),hip=mid(kp.left_hip,kp.right_hip);
+  const nose=kp.nose||mid(kp.left_eye,kp.right_eye);
+  const wy=[kp.left_wrist,kp.right_wrist].filter(Boolean).map(w=>w.y);
+  const ay=[kp.left_ankle,kp.right_ankle].filter(Boolean).map(a=>a.y);
+  const kL=angleDeg(kp.left_hip,kp.left_knee,kp.left_ankle),kR=angleDeg(kp.right_hip,kp.right_knee,kp.right_ankle);
+  return {bodyLine:lineToHorizontal(sh,hip),
+    elbowL:angleDeg(kp.left_shoulder,kp.left_elbow,kp.left_wrist),
+    elbowR:angleDeg(kp.right_shoulder,kp.right_elbow,kp.right_wrist),
+    knee:(kL!=null?kL:kR),
+    wristTopY:wy.length?Math.min(...wy)*100:null,
+    ankleY:ay.length?(ay.reduce((a,b)=>a+b,0)/ay.length)*100:null,
+    headRel:(nose&&sh)?(sh.y-nose.y)*100:null,
+    phase:classifyPhase({kp:kp,W:1,H:1},stroke),
+    conf:conf,nkp:nkp};
+}
+
+/* ===================== Claude calls (via local launcher proxy) ===================== */
+/* The request goes to the local helper at /api/analyze, which adds the API key
+   server-side and forwards to Anthropic — so there is no CORS / file:// problem. */
+async function postClaude(body,apiKey){
+  let res;
+  if(STATIC_DIRECT){
+    res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",
+      headers:{"Content-Type":"application/json","x-api-key":(apiKey||"").trim(),"anthropic-version":"2023-06-01","anthropic-dangerous-direct-browser-access":"true"},
+      body:JSON.stringify(body)});
+  } else {
+    try{
+      res=await fetch("/api/analyze",{method:"POST",
+        headers:{"Content-Type":"application/json",...(apiKey&&apiKey.trim()?{"x-swimlens-key":apiKey.trim()}:{})},
+        body:JSON.stringify(body)});
+    }catch(e){
+      throw new Error("Couldn't reach the analysis service. Check your internet connection.");
+    }
+  }
+  if(!res.ok){let d="";try{d=JSON.stringify(await res.json());}catch(e){d=await res.text().catch(()=>"");}
+    throw new Error("Claude API returned "+res.status+".\n"+d+(res.status===401?"\n\nTip: add a valid Anthropic API key in the key box above and Save it.":""));}
+  const data=await res.json();return(data.content||[]).filter(c=>c.type==="text").map(c=>c.text).join("\n");
+}
+async function analyzeCall(frames,metadata,poseContext,frameLabels,apiKey,model){
+  const imageBlocks=frames.map(f=>({type:"image",source:{type:"base64",media_type:"image/jpeg",data:f.b64}}));
+  let txt=JSON.stringify(metadata);
+  const sd=STROKE_DIMS[metadata.stroke]||STROKE_DIMS.freestyle;
+  txt+="\n\nEvaluate the dimensions appropriate to "+metadata.stroke+" — use these as the 'dimensions' (one entry each, in this order): "+JSON.stringify(sd);
+  if(frameLabels&&frameLabels.length)txt+="\n\nFrame labels (in image order): "+JSON.stringify(frameLabels);
+  if(poseContext&&poseContext.length)txt+="\n\nApproximate pose angles measured client-side (degrees; elbow ~90-110 = good freestyle catch, body_line near 0 = flat/streamlined, larger head_above_shoulder px = head lifted): "+JSON.stringify(poseContext);
+  txt+="\n\nReturn only the JSON described in your instructions.";
+  const out=await postClaude({model:model||"claude-opus-4-8",max_tokens:4500,system:SYSTEM_ANALYSIS,
+    messages:[{role:"user",content:[...imageBlocks,{type:"text",text:txt}]}]},apiKey);
+  return safeJSON(out);
+}
+async function planCall(metadata,analysis,apiKey,model){
+  const txt="Swimmer & context:\n"+JSON.stringify(metadata)+"\n\nTechnique analysis to act on:\n"+
+    JSON.stringify({summary:analysis.summary,one_thing:analysis.one_thing,strengths:analysis.strengths,dimensions:analysis.dimensions,race_model:analysis.race_model,performance_note:analysis.performance_note})+
+    "\n\nReturn only the JSON described in your instructions.";
+  const out=await postClaude({model:model||"claude-opus-4-8",max_tokens:4200,system:SYSTEM_PLAN,
+    messages:[{role:"user",content:[{type:"text",text:txt}]}]},apiKey);
+  return safeJSON(out);
+}
+
+/* ===================== UI atoms ===================== */
+function Field({label,children}){return <div><label>{label}</label>{children}</div>;}
+function Collapse({title,sub,children,open}){
+  return (
+    <details className="card sect" open={open!==false}>
+      <summary><span>{title}</span>{sub?<span className="muted" style={{fontSize:12,fontWeight:400}}>{sub}</span>:null}<span className="chev">▾</span></summary>
+      <div className="sect-body">{children}</div>
+    </details>
+  );
+}
+const STEPS=[{k:"upload",label:"Upload"},{k:"details",label:"Details"},{k:"frames",label:"Frames"},{k:"analyze",label:"Analyze"},{k:"report",label:"Report"}];
+const MAX_SELECT=30;   // how many frames you can select / send
+
+/* ===================== app ===================== */
+function PasscodeControls({hasPasscode,onSet,onClear}){
+  const [cur,setCur]=useState(""); const [a,setA]=useState(""); const [b,setB]=useState(""); const [msg,setMsg]=useState("");
+  async function doSet(){
+    if((a||"").length<3){setMsg("Use at least 3 characters.");return;}
+    if(a!==b){setMsg("The two entries don't match.");return;}
+    const r=await onSet(a,cur); if(r&&r.ok){setMsg("Passcode saved \u2713");setCur("");setA("");setB("");} else setMsg(r&&r.error==="bad_current"?"Current passcode is wrong.":"Couldn't save \u2014 is the helper running?");
+  }
+  async function doClear(){
+    const r=await onClear(cur); if(r&&r.ok){setMsg("Passcode removed.");setCur("");setA("");setB("");} else setMsg(r&&r.error==="bad_current"?"Current passcode is wrong.":"Couldn't remove \u2014 is the helper running?");
+  }
+  return (<div>
+    {hasPasscode && <input type="password" placeholder="Current passcode" value={cur} onChange={e=>setCur(e.target.value)} style={{display:"block",marginBottom:6,maxWidth:260,width:"100%",boxSizing:"border-box"}} />}
+    <div className="row">
+      <input type="password" placeholder={hasPasscode?"New passcode":"Set a passcode"} value={a} onChange={e=>setA(e.target.value)} style={{maxWidth:180}} />
+      <input type="password" placeholder="Repeat" value={b} onChange={e=>setB(e.target.value)} style={{maxWidth:140}} />
+      <button className="btn sm primary" disabled={!a} onClick={doSet}>{hasPasscode?"Change":"Set"}</button>
+      {hasPasscode && <button className="btn sm ghost" onClick={doClear}>Remove</button>}
+    </div>
+    {msg && <div className="hint" style={{marginTop:6}}>{msg}</div>}
+  </div>);
+}
+function App(){
+  const [meta,setMeta]=useState(SAMPLE_META);
+  const [apiKey,setApiKey]=useState("");
+  const [model,setModel]=useState("claude-opus-4-8");
+  const [keySaved,setKeySaved]=useState(false);
+  const [editKey,setEditKey]=useState(false);
+  const [keyMsg,setKeyMsg]=useState("");
+  const [file,setFile]=useState(null);
+  const [videoUrl,setVideoUrl]=useState(null);
+  const [duration,setDuration]=useState(0);
+  const [intervalS,setIntervalS]=useState(0.5);
+  const [frames,setFrames]=useState([]);
+  const [selected,setSelected]=useState([]);          // ordered array of indices
+  const [phaseMap,setPhaseMap]=useState({});           // frameIndex -> phase string
+  const [extracting,setExtracting]=useState(false);
+  const [extractPct,setExtractPct]=useState(0);
+  const [scrubT,setScrubT]=useState(0);
+  const [dragOver,setDragOver]=useState(false);
+
+  const [poseBusy,setPoseBusy]=useState(false);
+  const [poseOn,setPoseOn]=useState(false);
+  const [poseMap,setPoseMap]=useState({});
+
+  /* multi-swimmer focus */
+  const [focusOpen,setFocusOpen]=useState(false);
+  const [focusMode,setFocusMode]=useState("none"); // none | auto | box
+  const [refIdx,setRefIdx]=useState(null);          // reference frame index
+  const [detBoxes,setDetBoxes]=useState([]);        // detected boxes on ref frame
+  const [refDims,setRefDims]=useState(null);        // {W,H} of reference frame
+  const [pickCenter,setPickCenter]=useState(null);  // chosen swimmer center (normalized)
+  const [boxRect,setBoxRect]=useState(null);        // manual crop rect (normalized)
+  const [focusCrops,setFocusCrops]=useState({});    // frameIndex -> {dataUrl,b64,time}
+  const [focusBusy,setFocusBusy]=useState(false);
+  const [focusMsg,setFocusMsg]=useState("");
+  const focusCanvasRef=useRef(null);
+  const dragRef=useRef(null);
+  const [trackBusy,setTrackBusy]=useState(false);
+  const [trackedCrops,setTrackedCrops]=useState(null); // [{time,b64,dataUrl}] from YOLO+ByteTrack helper
+
+  /* auto phase labeling */
+  const [labelBusy,setLabelBusy]=useState("");
+  /* local CV motion analysis */
+  const [cvBusy,setCvBusy]=useState(false);
+  const [cvPct,setCvPct]=useState(0);
+  const [cvResult,setCvResult]=useState(null);
+  const cvc1=useRef(null),cvc2=useRef(null),cvc3=useRef(null),cvChartRefs=useRef([]);
+
+  const [analyzing,setAnalyzing]=useState(false);
+  const [stage,setStage]=useState("");
+  const [report,setReport]=useState(null);
+  const [error,setError]=useState("");
+  const [sessions,setSessions]=useState([]);
+  const [bigText,setBigText]=useState(false);
+  const [theme,setTheme]=useState("light");
+  const [hasPasscode,setHasPasscode]=useState(false);
+  const [unlocked,setUnlocked]=useState(false);
+  const [passInput,setPassInput]=useState("");
+  const [lockMsg,setLockMsg]=useState("");
+  const [profiles,setProfiles]=useState([]);
+  const [activeProfile,setActiveProfile]=useState(null);
+  const [profMsg,setProfMsg]=useState("");
+  const [showSettings,setShowSettings]=useState(false);
+  const [refTab,setRefTab]=useState("ref");
+  const [refStroke,setRefStroke]=useState(null);
+  const [glossQ,setGlossQ]=useState("");
+  const [hosted,setHosted]=useState(false);
+  const [accounts,setAccounts]=useState(false);
+  const [user,setUser]=useState(null);
+  const [authEmail,setAuthEmail]=useState("");
+  const [authPass,setAuthPass]=useState("");
+  const [authMode,setAuthMode]=useState("login");
+  const [authMsg,setAuthMsg]=useState("");
+  const [histScope,setHistScope]=useState("active"); // active | all
+  const [cmpA,setCmpA]=useState(""),[cmpB,setCmpB]=useState("");
+  const [reviewIdx,setReviewIdx]=useState(0);
+  const [reviewPlaying,setReviewPlaying]=useState(false);
+  const [speaking,setSpeaking]=useState(false);
+  const histRef=useRef(null),histChart=useRef(null);
+
+  const refReport=useRef(null);
+  const set=(k,v)=>setMeta(m=>({...m,[k]:v}));
+  const phases=(REFERENCE[meta.stroke]||REFERENCE.freestyle).map(r=>r.phase);
+  const _actProf=profiles.find(p=>p.id===activeProfile)||null;
+  const shownSessions=(histScope==="active"&&_actProf)?sessions.filter(s=>s.profileId===activeProfile||s.swimmer===_actProf.name):sessions;
+
+  useEffect(()=>{ document.body.classList.toggle("light",theme==="light"); },[theme]);
+  /* load saved-key status + saved progress history from the local helper */
+  useEffect(()=>{ if(STATIC_DIRECT){ setHosted(true); setAccounts(false); setUnlocked(true); try{ const lk=localStorage.getItem("swimKey")||""; if(lk){ setApiKey(lk); setKeySaved(true); } }catch(_){} return; }
+    fetch("/api/config").then(r=>r.json()).then(d=>{
+    setHosted(!!d.hosted); setAccounts(!!d.accounts); if(d.user)setUser(d.user);
+    if(d.hosted){ setUnlocked(true); try{ const lk=localStorage.getItem("swimKey")||""; if(lk){ setApiKey(lk); setKeySaved(true); } }catch(_){}}
+    else { setKeySaved(!!d.hasKey); setHasPasscode(!!d.hasPasscode); if(!d.hasPasscode||(typeof sessionStorage!=="undefined"&&sessionStorage.getItem("swimUnlocked")==="1"))setUnlocked(true); }
+  }).catch(()=>{ setUnlocked(true); }); },[]);
+  useEffect(()=>{ const ls=()=>{ try{const a=JSON.parse(localStorage.getItem("swimHistory")||"[]"); if(a.length)setSessions(a);}catch(_){} };
+    fetch("/api/history").then(r=>r.json()).then(d=>{ if(Array.isArray(d.sessions)&&d.sessions.length)setSessions(d.sessions); else ls(); }).catch(ls); },[]);
+  useEffect(()=>{ const ls=()=>{ try{const o=JSON.parse(localStorage.getItem("swimProfiles")||"null"); if(o&&o.profiles){setProfiles(o.profiles); if(o.active)setActiveProfile(o.active);}}catch(_){} };
+    fetch("/api/profiles").then(r=>r.json()).then(d=>{ if(Array.isArray(d.profiles)&&d.profiles.length){setProfiles(d.profiles); if(d.active)setActiveProfile(d.active);} else ls(); }).catch(ls); },[]);
+  useEffect(()=>{
+    if(!shownSessions||shownSessions.length<2||!histRef.current)return;
+    let cancelled=false;
+    loadChartJs().then(()=>{
+      if(cancelled||typeof Chart==="undefined"||!histRef.current)return;
+      try{histChart.current&&histChart.current.destroy();}catch(e){}
+      const labels=shownSessions.map((s,i)=>s.date||("#"+(i+1)));
+      const series=(key,label,color)=>({label:label,data:shownSessions.map(s=>s[key]!=null?s[key]:null),borderColor:color,backgroundColor:color+"22",borderWidth:2,pointRadius:3,spanGaps:true,tension:0.25});
+      const ds=[];
+      if(shownSessions.some(s=>s.strokeRate!=null))ds.push(series("strokeRate","Stroke rate /min","#3aa9ff"));
+      if(shownSessions.some(s=>s.bodyLine!=null))ds.push(series("bodyLine","Body-line °","#22d3c0"));
+      if(shownSessions.some(s=>s.symmetry!=null))ds.push(series("symmetry","Symmetry %","#ffba49"));
+      if(shownSessions.some(s=>s.t50s!=null))ds.push(series("t50s","50 time (s)","#ff7a8a"));
+      if(!ds.length)return;
+      const light=document.body.classList.contains("light");
+      const axis=light?"#56647e":"#9bacc7", grid=light?"#e2e8f1":"#1f2f48";
+      histChart.current=new Chart(histRef.current,{type:"line",data:{labels:labels,datasets:ds},
+        options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:axis}}},
+          scales:{x:{ticks:{color:axis},grid:{color:grid}},y:{ticks:{color:axis},grid:{color:grid}}}}});
+    });
+    return ()=>{cancelled=true;};
+  },[shownSessions,theme]);
+  useEffect(()=>{
+    if(!reviewPlaying)return;
+    const list=selected.length?[...selected].sort((a,b)=>a-b):frames.map((_,i)=>i);
+    if(list.length<2){setReviewPlaying(false);return;}
+    const id=setInterval(()=>setReviewIdx(x=>(x+1)%list.length),350);
+    return ()=>clearInterval(id);
+  },[reviewPlaying,selected,frames]);
+  async function saveKey(){
+    if(hosted){ try{localStorage.setItem("swimKey",apiKey.trim());}catch(_){} setKeySaved(true); setEditKey(false); setKeyMsg("Saved \u2713"); setTimeout(()=>setKeyMsg(""),2000); return; }
+    if(location.protocol==="file:"){ setKeyMsg("⚠ Open the app with the Swim Coach AI launcher (the address bar should read http://127.0.0.1…). The key can only be saved when the helper is running — not when the .html file is opened directly."); return; }
+    try{
+      const r=await fetch("/api/key",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({apiKey:apiKey.trim()})});
+      if(!r.ok){ const t=await r.text().catch(()=>""); throw new Error("server "+r.status+(t?": "+t.slice(0,120):"")); }
+      setKeySaved(true);setEditKey(false);setKeyMsg("Saved ✓");setTimeout(()=>setKeyMsg(""),2500);
+    }catch(e){ setKeyMsg("Couldn't save: "+(e&&e.message?e.message:"")+" — make sure you opened the app via the Swim Coach AI launcher and the helper window is still open."); }
+  }
+
+  async function verifyPass(){
+    try{ const r=await fetch("/api/passcode",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"verify",passcode:passInput})}); const d=await r.json();
+      if(d.ok){ setUnlocked(true); try{sessionStorage.setItem("swimUnlocked","1");}catch(_){} setPassInput(""); setLockMsg(""); }
+      else setLockMsg("Incorrect passcode. Try again.");
+    }catch(e){ setLockMsg("Can't reach the helper — launch the app with Swim Coach AI."); }
+  }
+  async function setPasscode(next,current){
+    try{ const r=await fetch("/api/passcode",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"set",passcode:next,current:current||""})}); const d=await r.json();
+      if(d.ok){ setHasPasscode(true); try{sessionStorage.setItem("swimUnlocked","1");}catch(_){} } return d;
+    }catch(e){ return {ok:false,error:"unreachable"}; }
+  }
+  async function clearPasscode(current){
+    try{ const r=await fetch("/api/passcode",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({action:"clear",current:current||""})}); const d=await r.json();
+      if(d.ok)setHasPasscode(false); return d;
+    }catch(e){ return {ok:false,error:"unreachable"}; }
+  }
+  async function reloadCloud(){
+    try{ const h=await fetch("/api/history").then(r=>r.json()); if(Array.isArray(h.sessions))setSessions(h.sessions); }catch(_){}
+    try{ const p=await fetch("/api/profiles").then(r=>r.json()); if(Array.isArray(p.profiles)){setProfiles(p.profiles); setActiveProfile(p.active||null);} }catch(_){}
+  }
+  async function doAuth(){
+    setAuthMsg("");
+    try{ const r=await fetch(authMode==="signup"?"/api/signup":"/api/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:authEmail.trim(),password:authPass})});
+      const d=await r.json();
+      if(d.ok){ setUser({email:d.email}); setAuthPass(""); setAuthMsg(""); reloadCloud(); }
+      else setAuthMsg(d.error||"Sign-in failed.");
+    }catch(e){ setAuthMsg("Couldn't reach the server."); }
+  }
+  async function doLogout(){ try{ await fetch("/api/logout",{method:"POST"}); }catch(_){} setUser(null); }
+  async function persistProfiles(list,active){ try{localStorage.setItem("swimProfiles",JSON.stringify({profiles:list,active:active}));}catch(_){} try{ await fetch("/api/profiles",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({profiles:list,active:active})}); }catch(_){} }
+  function saveCurrentAsProfile(){
+    const p={id:"p"+Date.now().toString(36),name:meta.name||"Swimmer",age:meta.age,sex:meta.sex,level:meta.level,stroke:meta.stroke,course:meta.course};
+    const list=[...profiles,p]; setProfiles(list); setActiveProfile(p.id); persistProfiles(list,p.id); setProfMsg("Saved profile: "+p.name); setTimeout(()=>setProfMsg(""),2500);
+  }
+  function switchProfile(id){
+    setActiveProfile(id||null); persistProfiles(profiles,id||null);
+    const p=profiles.find(x=>x.id===id); if(p)setMeta(m=>({...m,name:p.name||m.name,age:p.age||m.age,sex:p.sex||m.sex,level:p.level||m.level,stroke:p.stroke||m.stroke,course:p.course||m.course}));
+  }
+  function deleteProfile(id){ const list=profiles.filter(x=>x.id!==id); const act=activeProfile===id?null:activeProfile; setProfiles(list); setActiveProfile(act); persistProfiles(list,act); }
+  const activeProfileObj=profiles.find(p=>p.id===activeProfile)||null;
+
+  /* ----- swimmer focus ----- */
+  const imgFor=(i)=>focusCrops[i]||frames[i];
+  function openFocus(){
+    const first=[...selected].sort((a,b)=>a-b)[0];
+    setRefIdx(prev=>prev!=null?prev:(first!=null?first:0));
+    setFocusMode(m=>m==="none"?"auto":m);
+    setFocusOpen(true);
+  }
+  async function detectRef(){
+    if(refIdx==null||!frames[refIdx]){setFocusMsg("Pick a reference frame.");return;}
+    setFocusBusy(true);setFocusMsg("Detecting swimmers…");
+    try{
+      const {boxes,W,H}=await detectSwimmers(frames[refIdx]);
+      setDetBoxes(boxes);setRefDims({W,H});setFocusMode("auto");setBoxRect(null);
+      setFocusMsg(boxes.length?("Found "+boxes.length+" swimmer(s). Click the one to analyze."):"No swimmers detected — try another reference frame or draw a box.");
+    }catch(e){ setFocusMsg("Detection failed: "+(e.message||e)); }
+    setFocusBusy(false);
+  }
+  function canvasNorm(e){
+    const cv=focusCanvasRef.current,r=cv.getBoundingClientRect();
+    return {x:Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)),y:Math.max(0,Math.min(1,(e.clientY-r.top)/r.height))};
+  }
+  function onCanvasDown(e){
+    if(focusMode==="box"){dragRef.current=canvasNorm(e);setBoxRect({...dragRef.current,w:0,h:0});return;}
+    // default: tap the swimmer. If we've detected people, snap to the tapped/nearest box; otherwise just mark the tap point.
+    const p=canvasNorm(e);
+    if(detBoxes.length&&refDims){
+      // snap to a swimmer-shaped box under the tap; never snap to a tall (standing) box — use the exact tap instead
+      const hit=detBoxes.find(b=>boxAspectExcess(b)<0.6&&p.x>=b.xMin/refDims.W&&p.x<=b.xMax/refDims.W&&p.y>=b.yMin/refDims.H&&p.y<=b.yMax/refDims.H);
+      setPickCenter(hit?{x:hit.ncx,y:hit.ncy}:p);
+    } else {
+      setPickCenter(p);
+    }
+    if(focusMode==="none")setFocusMode("auto");
+    setFocusMsg("Marked your swimmer. Now choose how to follow them below.");
+  }
+  function onCanvasMove(e){
+    if(focusMode==="box"&&dragRef.current){
+      const p=canvasNorm(e),s=dragRef.current;
+      setBoxRect({x:Math.min(s.x,p.x),y:Math.min(s.y,p.y),w:Math.abs(p.x-s.x),h:Math.abs(p.y-s.y)});
+    }
+  }
+  function onCanvasUp(){ dragRef.current=null; }
+  function startBoxMode(){ setFocusMode("box");setDetBoxes([]);setPickCenter(null);setFocusMsg("Drag a rectangle around your swimmer (or their lane)."); }
+  function clearFocus(){ setFocusMode("none");setDetBoxes([]);setPickCenter(null);setBoxRect(null);setFocusCrops({});setFocusMsg("Focus cleared — whole frames will be used."); }
+  async function applyFocus(){
+    const idx=[...selected].sort((a,b)=>a-b);
+    if(!idx.length){setFocusMsg("Select some frames first.");return;}
+    if(focusMode==="auto"&&!pickCenter){setFocusMsg("Click your swimmer on the reference frame first.");return;}
+    if(focusMode==="box"&&(!boxRect||boxRect.w<0.02||boxRect.h<0.02)){setFocusMsg("Draw a box around your swimmer first.");return;}
+    setFocusBusy(true);setFocusMsg("");
+    try{
+      const crops={};
+      if(focusMode==="box"){
+        for(const i of idx){ crops[i]=await cropNorm(frames[i],boxRect,0.72); setFocusMsg("Cropping… "+Object.keys(crops).length+"/"+idx.length); }
+      } else {
+        let target={x:pickCenter.x,y:pickCenter.y};
+        for(const i of idx){
+          const {boxes,W,H}=await detectSwimmers(frames[i]);
+          if(boxes.length){ const nb=nearestBox(boxes,target); target={x:nb.ncx,y:nb.ncy}; crops[i]=await cropNorm(frames[i],boxToPaddedNorm(nb,W,H,0.45),0.72); }
+          else { crops[i]=frames[i]; }
+          setFocusMsg("Tracking your swimmer… "+Object.keys(crops).length+"/"+idx.length);
+        }
+      }
+      setFocusCrops(crops);setPoseMap({});
+      setFocusMsg("Focus applied to "+Object.keys(crops).length+" frame(s). These crops are what get analyzed.");
+    }catch(e){ setFocusMsg("Focus failed: "+(e.message||e)); }
+    setFocusBusy(false);
+  }
+  /* robust YOLO+ByteTrack tracking via the Python helper (falls back to in-browser) */
+  async function robustTrack(){
+    if(!file){setError("Upload a clip first.");return;}
+    const center=(focusMode==="box"&&boxRect)?{x:boxRect.x+boxRect.w/2,y:boxRect.y+boxRect.h/2}:pickCenter;
+    if(!center){setFocusMsg("First pick your swimmer (Detect → click) or draw a box.");return;}
+    setTrackBusy(true);setError("");setFocusMsg("Preparing frames for the tracker…");
+    try{
+      // send downscaled, strided frames (not the whole video): smaller upload, controls speed/resolution
+      const ex=await extractFrames(file,0.15,640,0.7,p=>setFocusMsg("Preparing frames for the tracker… "+p+"%"));
+      const dense=ex.frames.slice(0,300);
+      const payloadFrames=dense.map(f=>({time:f.time,b64:f.b64}));
+      const refTime=(refIdx!=null&&frames[refIdx])?frames[refIdx].time:0;
+      setFocusMsg("Running YOLO + ByteTrack on the helper ("+payloadFrames.length+" frames) — this can take a minute on a CPU…");
+      const ctrl=new AbortController();const to=setTimeout(()=>ctrl.abort(),600000); // 10-min safety timeout
+      let data;
+      try{
+        const res=await fetch("/api/track",{method:"POST",headers:{"Content-Type":"application/json"},
+          body:JSON.stringify({frames:payloadFrames,ref_time:refTime,pick:center,pad:0.4,crop_width:360}),signal:ctrl.signal});
+        data=await res.json();
+      } finally { clearTimeout(to); }
+      if(!data.ok){
+        setFocusMsg((data.message||"Robust tracker unavailable.")+" Falling back to the in-browser tracker.");
+        await applyFocus(); setTrackBusy(false); return;
+      }
+      const tc=(data.frames||[]).map(f=>({time:f.time,b64:f.crop,dataUrl:"data:image/jpeg;base64,"+f.crop,kpts:f.kpts||null}));
+      if(!tc.length){ setFocusMsg("Tracker didn't return frames for that swimmer. Falling back to the in-browser tracker."); await applyFocus(); setTrackBusy(false); return; }
+      setTrackedCrops(tc);
+      const crops={};
+      [...selected].sort((a,b)=>a-b).forEach(i=>{let best=tc[0],bd=1e9;tc.forEach(c=>{const d=Math.abs(c.time-frames[i].time);if(d<bd){bd=d;best=c;}});crops[i]=best;});
+      setFocusCrops(crops);setPoseMap({});setCvResult(null);
+      setFocusMsg("Locked onto your swimmer across "+tc.length+" frames with YOLO+ByteTrack (track #"+data.target_id+", "+data.n_tracks+" people seen"+(data.reacquired?", re-acquired "+data.reacquired+"× through turns/occlusion":"")+"). Stills and motion analysis will use this identity.");
+    }catch(e){
+      const aborted=e&&e.name==="AbortError";
+      setFocusMsg(aborted?"Tracking timed out (try a shorter clip). Falling back to the in-browser tracker.":"Couldn't reach the helper for tracking ("+(e.message||e)+"). Falling back to the in-browser tracker.");
+      try{ await applyFocus(); }catch(_){}
+    }
+    setTrackBusy(false);
+  }
+
+  /* draw the reference frame + overlays */
+  useEffect(()=>{
+    const cv=focusCanvasRef.current; if(!cv||!focusOpen||refIdx==null||!frames[refIdx])return;
+    const img=new Image();
+    img.onload=()=>{
+      const DW=Math.min(560,img.naturalWidth||560),scale=DW/(img.naturalWidth||DW);
+      cv.width=DW;cv.height=Math.round((img.naturalHeight||DW*0.56)*scale);
+      const ctx=cv.getContext("2d");ctx.drawImage(img,0,0,cv.width,cv.height);
+      if(focusMode==="auto"&&refDims){
+        detBoxes.forEach((b,n)=>{
+          const x=b.xMin/refDims.W*cv.width,y=b.yMin/refDims.H*cv.height,w=(b.xMax-b.xMin)/refDims.W*cv.width,h=(b.yMax-b.yMin)/refDims.H*cv.height;
+          const chosen=pickCenter&&Math.abs(b.ncx-pickCenter.x)<1e-9&&Math.abs(b.ncy-pickCenter.y)<1e-9;
+          ctx.lineWidth=chosen?4:2;ctx.strokeStyle=chosen?"#22d3c0":"#3aa9ff";ctx.strokeRect(x,y,w,h);
+          ctx.fillStyle=chosen?"#22d3c0":"#3aa9ff";ctx.fillRect(x,Math.max(0,y-17),20,17);
+          ctx.fillStyle="#04121f";ctx.font="bold 12px system-ui";ctx.fillText(String(n+1),x+5,Math.max(12,y-4));
+        });
+      }
+      if(focusMode==="box"&&boxRect){ctx.lineWidth=3;ctx.strokeStyle="#22d3c0";ctx.setLineDash([6,4]);
+        ctx.strokeRect(boxRect.x*cv.width,boxRect.y*cv.height,boxRect.w*cv.width,boxRect.h*cv.height);ctx.setLineDash([]);}
+      if(focusMode!=="box"&&pickCenter){
+        const mx=pickCenter.x*cv.width,my=pickCenter.y*cv.height;
+        ctx.strokeStyle="#22d3c0";ctx.fillStyle="rgba(34,211,192,.25)";ctx.lineWidth=3;
+        ctx.beginPath();ctx.arc(mx,my,13,0,7);ctx.fill();ctx.stroke();
+        ctx.beginPath();ctx.moveTo(mx-20,my);ctx.lineTo(mx+20,my);ctx.moveTo(mx,my-20);ctx.lineTo(mx,my+20);ctx.stroke();
+      }
+    };
+    img.src=frames[refIdx].dataUrl;
+  },[focusOpen,refIdx,frames,detBoxes,refDims,pickCenter,boxRect,focusMode]);
+
+  /* ----- local CV motion analysis across the whole clip ----- */
+  async function runMotionAnalysis(){
+    const tracked=trackedCrops&&trackedCrops.length;
+    if(!file&&!tracked){setError("Upload a clip first.");return;}
+    setCvBusy(true);setCvPct(0);setError("");
+    try{
+      let dense,crop,base,span;
+      if(tracked){ dense=trackedCrops; crop=null; base=0; span=100; }       // already cropped to the tracked swimmer
+      else { const ex=await extractFrames(file,0.12,512,0.6,p=>setCvPct(Math.round(p*0.45))); dense=ex.frames; crop=(focusMode==="box"&&boxRect)?boxRect:null; base=45; span=55; }
+      const cap=Math.min(dense.length,240);
+      const CONF=0.35;
+      const times=[],bL=[],eL=[],eR=[],kn=[],wr=[],an=[],hd=[],ph=[]; let usable=0;
+      const usingYolo=tracked&&dense.some(d=>d.kpts&&d.kpts.length);
+      for(let i=0;i<cap;i++){
+        const m=(dense[i].kpts&&dense[i].kpts.length)?metricsFromKpts(dense[i].kpts,meta.stroke):await poseSeriesFrame(dense[i].dataUrl,crop,meta.stroke);
+        const good=!!(m&&m.conf>=CONF&&m.nkp>=6);   // drop low-confidence frames so metrics stay trustworthy
+        if(good)usable++;
+        times.push(+dense[i].time.toFixed(2));
+        bL.push(good?m.bodyLine:null);eL.push(good?m.elbowL:null);eR.push(good?m.elbowR:null);kn.push(good?m.knee:null);
+        wr.push(good&&m.wristTopY!=null?100-m.wristTopY:null);an.push(good?m.ankleY:null);
+        hd.push(good?m.headRel:null);ph.push(good?m.phase:null);
+        setCvPct(base+Math.round((i+1)/cap*span));
+      }
+      const dur=times.length?times[times.length-1]-times[0]:0;
+      const coverage=cap?Math.round(usable/cap*100):0;
+      const lowConf=usable<8||coverage<50;
+      const strokes=countPeaks(smooth(wr,1),times),kicks=countPeaks(smooth(an,1),times);
+      const breaths=countPeaks(smooth(hd,1),times),sym=symmetryOf(eL,eR);
+      const elbowAvg=eL.map((v,i)=>v!=null&&eR[i]!=null?Math.round((v+eR[i])/2):(v!=null?v:eR[i]));
+      const catchVals=[];ph.forEach((p,i)=>{if(p==="Catch / early forearm"&&elbowAvg[i]!=null)catchVals.push(elbowAvg[i]);});
+      const catchElbow=catchVals.length?Math.round(catchVals.reduce((a,b)=>a+b,0)/catchVals.length):null;
+      // smooth the displayed time-series so charts aren't jittery (accuracy/trust)
+      setCvResult({times:times,bodyLine:smooth(bL,1),elbow:smooth(elbowAvg,1),knee:kn,head:smooth(hd,1),phases:ph,duration:dur,
+        summary:{bodyLine:statsOf(bL),elbow:statsOf(eL.concat(eR)),knee:statsOf(kn),headLift:statsOf(hd),
+          strokeRate:strokes.perMin,strokeCount:strokes.count,kickRate:kicks.perMin,kickCount:kicks.count,
+          breathCount:breaths.count,breathRate:breaths.perMin,catchElbow:catchElbow,symmetry:sym,
+          frames:cap,usable:usable,coverage:coverage,lowConfidence:lowConf,cropped:!!crop,poseModel:usingYolo?"YOLO11-pose":"MoveNet Thunder"}});
+    }catch(e){setError("Motion analysis failed: "+(e.message||e));}
+    setCvBusy(false);
+  }
+  useEffect(()=>{
+    if(!cvResult)return;
+    let cancelled=false;
+    loadChartJs().then(()=>{
+      if(cancelled||typeof Chart==="undefined")return;
+      const light=document.body.classList.contains("light");
+      const axis=light?"#56647e":"#9bacc7", grid=light?"#e2e8f1":"#1f2f48";
+      cvChartRefs.current.forEach(c=>{try{c.destroy();}catch(e){}});cvChartRefs.current=[];
+      const mk=(ref,label,data,color)=>{
+        if(!ref.current)return;
+        const ch=new Chart(ref.current,{type:"line",
+          data:{labels:cvResult.times,datasets:[{label:label,data:data,borderColor:color,backgroundColor:color+"33",borderWidth:2,pointRadius:0,spanGaps:true,tension:0.3}]},
+          options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{labels:{color:axis}}},
+            scales:{x:{title:{display:true,text:"seconds",color:axis},ticks:{color:axis,maxTicksLimit:8},grid:{color:grid}},y:{ticks:{color:axis},grid:{color:grid}}}}});
+        cvChartRefs.current.push(ch);
+      };
+      mk(cvc1,"Body-line angle (°, lower = flatter/streamlined)",cvResult.bodyLine,"#3aa9ff");
+      mk(cvc2,"Elbow angle (°)",cvResult.elbow,"#22d3c0");
+      if(cvResult.head)mk(cvc3,"Head lift (higher = head raised → breath)",cvResult.head,"#ffba49");
+    });
+    return ()=>{cancelled=true;};
+  },[cvResult,theme]);
+
+  /* derived step state */
+  const step = report?"report" : selected.length?"analyze" : frames.length?"frames" : file?"details":"upload";
+  const stepIdx=STEPS.findIndex(s=>s.k===step);
+
+  function handleFile(f){
+    if(!f)return;
+    if(!/video\//.test(f.type)&&!/\.(mp4|mov|m4v|webm)$/i.test(f.name)){setError("Please choose a video file (MP4 or MOV).");return;}
+    setError("");setReport(null);setFrames([]);setSelected([]);setPhaseMap({});setPoseMap({});
+    setFocusOpen(false);setFocusMode("none");setDetBoxes([]);setPickCenter(null);setBoxRect(null);setFocusCrops({});setRefIdx(null);setFocusMsg("");
+    setCvResult(null);setCvPct(0);setTrackedCrops(null);
+    setFile(f);setVideoUrl(URL.createObjectURL(f));
+  }
+  function onDrop(e){e.preventDefault();setDragOver(false);handleFile(e.dataTransfer.files&&e.dataTransfer.files[0]);}
+
+  async function doExtract(){
+    if(!file){setError("Choose a video first.");return;}
+    setError("");setExtracting(true);setExtractPct(0);setPoseMap({});
+    try{
+      const{frames:fr,duration:d}=await extractFrames(file,parseFloat(intervalS)||0.5,768,0.7,setExtractPct);
+      setFrames(fr);setDuration(d);autoSelect(fr,8);
+      setTimeout(()=>document.getElementById("card-frames")?.scrollIntoView({behavior:"smooth"}),80);
+    }catch(err){setError(err.message||String(err));}
+    setExtracting(false);
+  }
+  function autoSelect(fr,n){
+    const count=Math.min(n,fr.length);const idx=[];
+    for(let i=0;i<count;i++)idx.push(Math.round(i*(fr.length-1)/Math.max(1,count-1)));
+    setSelected([...new Set(idx)]);
+  }
+  /* smart pick: choose the clearest frame for each detected stroke phase */
+  async function smartPick(){
+    if(!frames.length){setError("Extract frames first.");return;}
+    setLabelBusy("smart");setError("");
+    try{
+      const best={};
+      for(let i=0;i<frames.length;i++){
+        const m=await poseSeriesFrame(imgFor(i).dataUrl,null,meta.stroke);
+        if(m&&m.conf>=0.35&&m.phase&&(!best[m.phase]||m.conf>best[m.phase].conf))best[m.phase]={i:i,conf:m.conf};
+        if(i%4===0)await new Promise(r=>setTimeout(r));
+      }
+      const picks=Object.keys(best).map(p=>best[p].i).sort((a,b)=>a-b).slice(0,MAX_SELECT);
+      if(picks.length<3){setError("Couldn't confidently spot distinct phases — pick frames manually, or try a clearer/side-on clip.");setLabelBusy("");return;}
+      setSelected(picks);
+      const pm={...phaseMap};Object.keys(best).forEach(p=>{pm[best[p].i]=p;});setPhaseMap(pm);
+    }catch(e){setError("Smart pick failed: "+(e.message||e));}
+    setLabelBusy("");
+  }
+  function toggle(i){
+    setSelected(prev=>{
+      if(prev.includes(i))return prev.filter(x=>x!==i);
+      if(prev.length>=MAX_SELECT)return prev;
+      return [...prev,i].sort((a,b)=>a-b);
+    });
+  }
+  async function captureScrub(){
+    if(!file)return;
+    try{const f=await captureAt(file,scrubT,768,0.7);
+      setFrames(prev=>[...prev,f].sort((a,b)=>a.time-b.time));
+    }catch(err){setError(err.message||String(err));}
+  }
+  async function runPoseOnSelected(){
+    setPoseBusy(true);setError("");
+    try{const map={...poseMap};
+      for(const i of [...selected].sort((a,b)=>a-b)){if(!frames[i])continue;map[i]=await runPose(imgFor(i));setPoseMap({...map});}
+      setPoseOn(true);
+    }catch(err){setError("Pose detection failed: "+(err.message||err));}
+    setPoseBusy(false);
+  }
+
+  async function autoLabelLocal(){
+    const idx=[...selected].sort((a,b)=>a-b); if(!idx.length){setError("Select some frames first.");return;}
+    setLabelBusy("local");setError("");
+    try{
+      const map={...phaseMap};
+      for(const i of idx){
+        const kpd=(poseMap[i]&&poseMap[i].kpd)?poseMap[i].kpd:await keypointsFor(imgFor(i).dataUrl);
+        const ph=classifyPhase(kpd,meta.stroke);
+        if(ph&&phases.includes(ph))map[i]=ph;
+        setPhaseMap({...map});
+      }
+    }catch(e){setError("Auto-label failed: "+(e.message||e));}
+    setLabelBusy("");
+  }
+  async function autoLabelAI(){
+    const idx=[...selected].sort((a,b)=>a-b); if(!idx.length){setError("Select some frames first.");return;}
+    setLabelBusy("ai");setError("");
+    try{
+      const imgs=idx.map(i=>imgFor(i)).filter(f=>f&&f.b64);
+      if(!imgs.length){setError("No frame images available to label.");setLabelBusy("");return;}
+      const sys="You are a swimming coach. You are shown "+imgs.length+" still frames from a "+meta.stroke+" clip, in order. For EACH image pick the single best-matching stroke phase from this list (copy the text exactly): "+JSON.stringify(phases)+'. Respond with ONLY a JSON array of '+imgs.length+' strings — one phase per image, in order — like ["'+phases[0]+'","'+(phases[1]||phases[0])+'"]. No prose, no code fences.';
+      const imageBlocks=imgs.map(f=>({type:"image",source:{type:"base64",media_type:"image/jpeg",data:f.b64}}));
+      const out=await postClaude({model:model||"claude-opus-4-8",max_tokens:600,system:sys,
+        messages:[{role:"user",content:[...imageBlocks,{type:"text",text:"Return only the JSON array of "+imgs.length+" phase strings, in image order."}]}]},apiKey);
+      // tolerant parse: array, or {phases|labels|result:[...]}, or any bracketed array, or scan text
+      let arr=[];
+      try{ const p=safeJSON(out); arr=Array.isArray(p)?p:(p.phases||p.labels||p.result||[]); }catch(_){ }
+      if(!arr.length){ const m=String(out).match(/\[[\s\S]*\]/); if(m){ try{ arr=JSON.parse(m[0]); }catch(__){} } }
+      if(!arr.length){ String(out).split(/\n|,|\d+[).]/).forEach(ln=>{ const mt=matchPhaseTo(ln,phases); if(mt)arr.push(mt); }); }
+      const map={...phaseMap}; let applied=0;
+      idx.forEach((i,n)=>{ const mt=matchPhaseTo(arr[n],phases); if(mt){map[i]=mt;applied++;} });
+      setPhaseMap(map);
+      if(!applied) setError("AI labeling got an unexpected reply. It started with: "+(String(out).slice(0,140)||"(empty)"));
+    }catch(e){setError("AI labeling failed: "+(e.message||e)+". Make sure the launcher is running and your API key is saved.");}
+    setLabelBusy("");
+  }
+
+  function buildMetadata(){
+    const t50=parseTimeToSec(meta.t50),t100=parseTimeToSec(meta.t100);
+    return{swimmer_name:meta.name||"the swimmer",age:Number(meta.age)||null,sex:meta.sex,
+      level:LEVELS.find(l=>l.id===meta.level)?.label,stroke:meta.stroke,
+      course:(COURSES.find(c=>c.id===meta.course)||{label:(meta.course==="50"?"50 m long course":meta.course==="25"?"25 m short course":meta.course)}).label,
+      times:{ "50":meta.t50||null,"100":meta.t100||null,"50_seconds":t50,"100_seconds":t100,
+        ratio_100_over_2x50:(t50&&t100)?Number((t100/(2*t50)).toFixed(3)):null,splits:meta.splits||null},
+      coach_notes:meta.notes||null,
+      cv_metrics:cvResult?{measured_locally_with:"MoveNet pose model across the whole clip (estimates from a single camera view)",
+        clip_seconds:cvResult.duration?Number(cvResult.duration.toFixed(1)):null,
+        stroke_rate_per_min:cvResult.summary.strokeRate,stroke_count:cvResult.summary.strokeCount,
+        kick_count:cvResult.summary.kickCount,kick_rate_per_min:cvResult.summary.kickRate,
+        breath_count:cvResult.summary.breathCount,
+        catch_elbow_deg:cvResult.summary.catchElbow,
+        body_line_deg:cvResult.summary.bodyLine,elbow_deg:cvResult.summary.elbow,knee_deg:cvResult.summary.knee,
+        head_lift:cvResult.summary.headLift,
+        left_right_symmetry_pct:cvResult.summary.symmetry?cvResult.summary.symmetry.pct:null,
+        tracking_coverage_pct:cvResult.summary.coverage,
+        confidence:cvResult.summary.lowConfidence?"LOW — swimmer hard to see in many frames; weight these numbers lightly and lean on the stills":"good"}:null,
+      focus:Object.keys(focusCrops).length?"frames are cropped to a single chosen swimmer — analyze only this swimmer":"whole frames (if several swimmers are visible, analyze the most central/clearly-tracked one and say so)",
+      analysis_basis:"still frames sampled in-browser at "+intervalS+"s interval; not motion video"};
+  }
+  async function analyze(){
+    const idx=[...selected].sort((a,b)=>a-b);
+    if(idx.length<3){setError("Select at least 3 frames (6–10 is ideal).");return;}
+    setError("");setAnalyzing(true);setReport(null);
+    const chosen=idx.map(i=>imgFor(i)).filter(Boolean);
+    const metadata=buildMetadata();
+    const frameLabels=idx.map((i,n)=>({frame:n+1,time_s:Number(frames[i].time.toFixed(2)),phase:phaseMap[i]||null}));
+    const poseIdx=idx.filter(i=>poseMap[i]&&poseMap[i].angles);
+    const poseContext=poseIdx.length?poseIdx.map(i=>({frame_time_s:Number(frames[i].time.toFixed(2)),phase:phaseMap[i]||null,...poseMap[i].angles})):null;
+    try{
+      setStage("Reading the positions in your frames…");
+      const analysis=await analyzeCall(chosen,metadata,poseContext,frameLabels,apiKey,model);
+      setStage("Writing priorities, drills, and a practice plan…");
+      let plan={};
+      try{ plan=await planCall(metadata,analysis,apiKey,model); }catch(e){ plan={}; } // plan is best-effort
+      setReport({...analysis,...plan});
+      setTimeout(()=>refReport.current?.scrollIntoView({behavior:"smooth"}),120);
+    }catch(err){setError(err.message||String(err));}
+    setAnalyzing(false);setStage("");
+  }
+
+  async function saveSession(){
+    if(!report)return;
+    const dims=report.dimensions||[];
+    const rec={when:new Date().toLocaleString(),date:new Date().toISOString().slice(0,10),
+      profileId:activeProfile||null,swimmer:(activeProfileObj&&activeProfileObj.name)||meta.name||"Swimmer",stroke:meta.stroke,t50:meta.t50||"",t100:meta.t100||"",t50s:parseTimeToSec(meta.t50),
+      strokeRate:cvResult?cvResult.summary.strokeRate:null,
+      bodyLine:(cvResult&&cvResult.summary.bodyLine)?cvResult.summary.bodyLine.mean:null,
+      symmetry:(cvResult&&cvResult.summary.symmetry)?cvResult.summary.symmetry.pct:null,
+      catchElbow:cvResult?cvResult.summary.catchElbow:null,
+      strengths:dims.filter(d=>ratingClass(d.rating)==="strength").length,
+      needs:dims.filter(d=>ratingClass(d.rating)==="needs").length,
+      top:(report.top_priorities&&report.top_priorities[0]&&report.top_priorities[0].priority)||"—"};
+    try{
+      const r=await fetch("/api/history",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({session:rec})});
+      const d=await r.json(); if(Array.isArray(d.sessions)){setSessions(d.sessions); try{localStorage.setItem("swimHistory",JSON.stringify(d.sessions));}catch(_){} return;}
+      throw new Error();
+    }catch(e){ setSessions(p=>{ const n=[...p,rec]; try{localStorage.setItem("swimHistory",JSON.stringify(n));}catch(_){} return n; }); }
+  }
+  async function clearHistory(){
+    try{localStorage.removeItem("swimHistory");}catch(_){}
+    try{const r=await fetch("/api/history",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({clear:true})});
+      const d=await r.json();setSessions(Array.isArray(d.sessions)?d.sessions:[]);}catch(e){setSessions([]);}
+  }
+  function copyReport(){
+    if(!report)return;const L=[];
+    L.push(`Swim Coach AI report — ${meta.name||"Swimmer"} (age ${meta.age}, ${meta.stroke})`,"","Summary: "+report.summary,"");
+    if(report.one_thing)L.push("⭐ IF YOU FIX ONE THING: "+report.one_thing,"");
+    if(Array.isArray(report.strengths)&&report.strengths.length){L.push("STRENGTHS (keep doing):");report.strengths.forEach(s=>L.push("   ✓ "+s));L.push("");}
+    if(report.top_priorities){L.push("TOP PRIORITIES:");report.top_priorities.forEach((p,i)=>{L.push(`${i+1}. ${p.priority} — ${p.why_it_matters}`);if(p.cue)L.push(`   Cue: "${p.cue}"`);(p.drills||[]).forEach(d=>{L.push(`   • ${d.name}: ${d.how}`);if(d.purpose)L.push(`       Purpose: ${d.purpose}`);if(d.dose)L.push(`       Dose: ${d.dose}`);if(d.success_check)L.push(`       Working when: ${d.success_check}`);if(d.progression)L.push(`       Level up: ${d.progression}`);});});L.push("");}
+    if(Array.isArray(report.weekly_focus)&&report.weekly_focus.length){L.push("WEEK-BY-WEEK FOCUS:");report.weekly_focus.forEach(w=>L.push(`   • ${w.week}: ${w.focus}${w.main_drill?" (drill: "+w.main_drill+")":""}`));L.push("");}
+    L.push("DIMENSIONS:");(report.dimensions||[]).forEach(d=>L.push(`- ${d.name} [${d.rating}${typeof d.score==="number"&&d.score>0?", "+d.score+"/100":""}]: ${d.observation}${d.root_cause?" (root cause: "+d.root_cause+")":""} → ${d.improve}${d.cue?'  ["'+d.cue+'"]':""}`));
+    if(report.race_model||report.race_strategy){L.push("","RACE MODEL & PACING:");if(report.race_model)L.push("   "+report.race_model);if(report.race_strategy)L.push("   Race plan: "+report.race_strategy);}
+    if(Array.isArray(report.periodization)&&report.periodization.length){L.push("","TRAINING BLOCKS:");report.periodization.forEach(b=>L.push(`   • ${b.block}${b.weeks?" ("+b.weeks+")":""}: ${b.focus}${b.sample?" — "+b.sample:""}`));}
+    if(report.practice_plan){L.push("","PRACTICE PLAN ("+(report.practice_plan.focus||"")+"):");(report.practice_plan.sets||[]).forEach(s=>L.push(`   • ${s.name}: ${s.detail}`));}
+    if(Array.isArray(report.dryland)&&report.dryland.length){L.push("","DRYLAND:");report.dryland.forEach(d=>L.push(`   • ${d.name}: ${d.how}${d.dose?" ("+d.dose+")":""}`));}
+    if(Array.isArray(report.games)&&report.games.length){L.push("","FUN GAMES:");report.games.forEach(g=>L.push("   • "+g));}
+    if(Array.isArray(report.parent_tips)&&report.parent_tips.length){L.push("","PARENT TIPS:");report.parent_tips.forEach(t=>L.push("   • "+t));}
+    if(report.performance_note)L.push("","Performance note: "+report.performance_note);
+    if(report.film_next)L.push("","Film/swim next: "+report.film_next);
+    if(report.caveats)L.push("","Caveats: "+report.caveats);
+    navigator.clipboard.writeText(L.join("\n")).then(()=>alert("Report copied to clipboard."),()=>alert("Copy failed — select manually."));
+  }
+  function downloadJSON(){
+    if(!report)return;const blob=new Blob([JSON.stringify({meta:buildMetadata(),report},null,2)],{type:"application/json"});
+    const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=(meta.name||"swimlens")+"-report.json";a.click();
+  }
+  function readAloud(){
+    if(!report||typeof window.speechSynthesis==="undefined")return;
+    if(speaking){window.speechSynthesis.cancel();setSpeaking(false);return;}
+    let t=(meta.name||"Swimmer")+". "+(report.summary||"")+". Top priorities. ";
+    (report.top_priorities||[]).forEach((p,i)=>{t+=(i+1)+". "+p.priority+". "+(p.why_it_matters||"")+". ";});
+    const u=new SpeechSynthesisUtterance(t);u.rate=1;u.onend=()=>setSpeaking(false);
+    window.speechSynthesis.cancel();window.speechSynthesis.speak(u);setSpeaking(true);
+  }
+
+  /* pose averages across analyzed frames */
+  const poseAvg=useMemo(()=>{
+    const vals=Object.values(poseMap).map(p=>p&&p.angles).filter(Boolean);
+    if(!vals.length)return null;
+    const avg=k=>{const a=vals.map(v=>v[k]).filter(x=>x!=null);return a.length?Math.round(a.reduce((s,x)=>s+x,0)/a.length):null;};
+    const elbow=()=>{const a=vals.flatMap(v=>[v.elbow_left,v.elbow_right]).filter(x=>x!=null);return a.length?Math.round(a.reduce((s,x)=>s+x,0)/a.length):null;};
+    return{elbow:elbow(),body_line:avg("body_line_vs_horizontal"),knee:Math.round(((avg("knee_left")||0)+(avg("knee_right")||0))/2)||avg("knee_left")||avg("knee_right")};
+  },[poseMap]);
+
+  const t50s=parseTimeToSec(meta.t50),t100s=parseTimeToSec(meta.t100);
+  const fadeRatio=(t50s&&t100s)?(t100s/(2*t50s)):null;
+
+  if(hasPasscode && !unlocked){
+    return (
+      <div className={"wrap"+(bigText?" big":"")}>
+        <div className="lockscreen">
+          <div className="lockcard">
+            <div className="logo" style={{margin:"0 auto 12px"}}>🏊</div>
+            <h2 style={{margin:"0 0 4px",textAlign:"center"}}>Swim Coach AI</h2>
+            <div className="sub" style={{textAlign:"center",marginBottom:16}}>Enter your passcode to continue</div>
+            <input type="password" autoFocus value={passInput} placeholder="Passcode"
+              onChange={e=>setPassInput(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")verifyPass();}}
+              style={{width:"100%",textAlign:"center",fontSize:18,letterSpacing:3,padding:"11px",boxSizing:"border-box"}} />
+            <button className="btn primary" style={{width:"100%",marginTop:12}} onClick={verifyPass}>Unlock</button>
+            {lockMsg && <div className="hint" style={{marginTop:10,textAlign:"center"}}>{lockMsg}</div>}
+          </div>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className={"wrap"+(bigText?" big":"")}>
+      <div className="topbar">
+        <div className="logo">🏊</div>
+        <div style={{flex:1}}>
+          <h1>Swim Coach AI</h1>
+          <div className="sub">Upload a short clip → pick key frames → get an age-appropriate AI stroke report.</div>
+        </div>
+        <select className="profsel noprint" value={activeProfile||""} title="Swimmer profile"
+          onChange={e=>{ if(e.target.value==="__new")saveCurrentAsProfile(); else switchProfile(e.target.value); }}>
+          <option value="">All swimmers</option>
+          {profiles.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+          <option value="__new">+ Save current as profile</option>
+        </select>
+        <button className="btn sm ghost noprint" title="Settings" onClick={()=>setShowSettings(true)} style={{flex:"0 0 auto"}}>⚙</button>
+        <button className="btn sm ghost noprint" title="Light / dark theme" onClick={()=>setTheme(t=>t==="light"?"dark":"light")} style={{flex:"0 0 auto"}}>{theme==="light"?"🌙":"☀️"}</button>
+        <button className="btn sm ghost noprint" title="Larger text" onClick={()=>setBigText(v=>!v)} style={{flex:"0 0 auto"}}>{bigText?"A−":"A+"}</button>
+      </div>
+
+      {/* two-column layout: sticky step rail on the left, workflow on the right */}
+      <div className="layout">
+      <aside className="rail noprint">
+        <div className="raillabel">Workflow</div>
+        <div className="stepper">
+          {STEPS.map((s,i)=>{
+            const cls=i<stepIdx?"done":i===stepIdx?"active":"";
+            return <div key={s.k} className={"snode "+cls} onClick={()=>document.getElementById("card-"+s.k)?.scrollIntoView({behavior:"smooth"})}>
+              <span className="dot">{i<stepIdx?"✓":i+1}</span><span className="lbl">{s.label}</span></div>;
+          })}
+        </div>
+      </aside>
+      <div className="main">
+
+      {location.protocol==="file:" &&
+        <div className="filewarn noprint">
+          <b>⚠ The app was opened the wrong way.</b> You're viewing the file directly, so it can't reach its local helper — your API key won't save and analysis won't run.
+          <br/>Close this tab and launch with <b>Swim Coach AI</b> (the desktop icon, or <span className="kbd">Swim Coach AI.bat</span>). It opens the correct tab at <b>http://127.0.0.1:8765</b>.
+        </div>}
+
+      <div className="guard noprint">
+        Analysis is built from a handful of <b>still frames</b>, not motion — confirm timing-based issues with a live coach.
+        Your <b>video never leaves the browser</b>; only a few small stills are sent. Guidance is age-appropriate and aimed at enjoyment and long-term development.
+      </div>
+
+      {/* settings (separate panel; only mounts when opened) */}
+      {showSettings &&
+      <div className="settings-modal noprint" onClick={e=>{if(e.target===e.currentTarget)setShowSettings(false);}}>
+      <div className="card settings-card" id="card-settings">
+        <div className="row" style={{justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+          <h2 style={{margin:0}}><span className="stepn idle">⚙</span>Settings</h2>
+          <button className="btn sm ghost" onClick={()=>setShowSettings(false)}>✕ Close</button>
+        </div>
+        {profMsg && <div className="hint" style={{marginBottom:8}}>{profMsg}</div>}
+        <label>Anthropic API key</label>
+        {keySaved && !editKey ?
+          <div className="row">
+            <span className="chip strength">✓ API key saved</span>
+            <button className="btn sm ghost" onClick={()=>{setEditKey(true);setApiKey("");setKeyMsg("");}}>Change key</button>
+          </div>
+          :
+          <div className="row">
+            <input type="password" placeholder="sk-ant-…" value={apiKey} onChange={e=>setApiKey(e.target.value)} style={{flex:1,minWidth:180}} />
+            <button className="btn primary sm" disabled={!apiKey.trim()} onClick={saveKey}>Save key</button>
+            {keySaved && <button className="btn sm ghost" onClick={()=>{setEditKey(false);setKeyMsg("");}}>Cancel</button>}
+          </div>}
+        {keyMsg && <div className="hint" style={{marginTop:6}}>{keyMsg}</div>}
+        <div className="hint" style={{marginTop:6}}>{hosted?"Stored only in this browser and sent with each request to Anthropic through the site's proxy — never saved on the server.":"Saved to a config file next to the app (swimlens_config.json). The local helper sends it only to Anthropic — nowhere else."} Get a key at console.anthropic.com → API keys.</div>
+        <div style={{marginTop:12,borderTop:"1px solid var(--line)",paddingTop:10}}>
+          <label>Model (used for analysis, coaching plan & AI auto-label)</label>
+          <div className="row">
+            <input type="text" value={model} onChange={e=>setModel(e.target.value)} style={{flex:1,minWidth:180}} />
+            <button className="btn sm" onClick={()=>setModel("claude-opus-4-8")}>Opus 4.8</button>
+            <button className="btn sm" onClick={()=>setModel("claude-sonnet-4-6")}>Sonnet 4.6</button>
+            <button className="btn sm" onClick={()=>setModel("claude-haiku-4-5-20251001")}>Haiku 4.5</button>
+          </div>
+          <div className="hint" style={{marginTop:6}}>The exact model string matters. The current Opus is <span className="kbd">claude-opus-4-8</span> (there is no public “4.7”). Opus = most capable; Sonnet = faster/cheaper; Haiku = fastest. An invalid string will return a 404 from the API.</div>
+        </div>
+        {hosted && accounts &&
+        <div style={{marginTop:14,borderTop:"1px solid var(--line)",paddingTop:12}}>
+          <label>Account {user?<span className="chip strength" style={{fontSize:11}}>{user.email}</span>:<span className="chip" style={{fontSize:11}}>signed out</span>}</label>
+          {user
+            ? <div className="row" style={{marginTop:4}}><span className="muted" style={{fontSize:13}}>Your swimmers &amp; progress sync to this account across devices.</span><button className="btn sm ghost" style={{marginLeft:"auto"}} onClick={doLogout}>Sign out</button></div>
+            : <div style={{marginTop:4}}>
+                <div className="row">
+                  <button className={"btn sm"+(authMode==="login"?" primary":"")} onClick={()=>setAuthMode("login")}>Sign in</button>
+                  <button className={"btn sm"+(authMode==="signup"?" primary":"")} onClick={()=>setAuthMode("signup")}>Create account</button>
+                </div>
+                <div className="row" style={{marginTop:6}}>
+                  <input type="email" placeholder="email" value={authEmail} onChange={e=>setAuthEmail(e.target.value)} style={{maxWidth:220}} />
+                  <input type="password" placeholder="password (8+ chars)" value={authPass} onChange={e=>setAuthPass(e.target.value)} onKeyDown={e=>{if(e.key==="Enter")doAuth();}} style={{maxWidth:180}} />
+                  <button className="btn sm primary" disabled={!authEmail||!authPass} onClick={doAuth}>{authMode==="signup"?"Create":"Sign in"}</button>
+                </div>
+                {authMsg && <div className="hint" style={{marginTop:6}}>{authMsg}</div>}
+              </div>}
+          <div className="hint" style={{marginTop:6}}>Optional. Sign in to sync your swimmers and progress across devices. Your Anthropic API key always stays only in this browser.</div>
+        </div>}
+        {!hosted &&
+        <div style={{marginTop:14,borderTop:"1px solid var(--line)",paddingTop:12}}>
+          <label>Passcode lock {hasPasscode?<span className="chip strength" style={{fontSize:11}}>on</span>:<span className="chip" style={{fontSize:11}}>off</span>}</label>
+          <PasscodeControls hasPasscode={hasPasscode} onSet={setPasscode} onClear={clearPasscode} />
+          <div className="hint" style={{marginTop:6}}>Optional. Protects the saved key and data on a shared computer. It's a local gate sent only to your helper — convenient privacy, not bank-grade security.</div>
+        </div>}
+        <div style={{marginTop:14,borderTop:"1px solid var(--line)",paddingTop:12}}>
+          <label>Appearance & defaults</label>
+          <div className="row" style={{marginTop:4}}>
+            <button className="btn sm" onClick={()=>setTheme(t=>t==="light"?"dark":"light")}>{theme==="light"?"🌙 Dark":"☀️ Light"} theme</button>
+            <button className="btn sm" onClick={()=>setBigText(v=>!v)}>{bigText?"A− Normal":"A+ Large"} text</button>
+          </div>
+          <div className="grid g2" style={{marginTop:8}}>
+            <Field label="Default stroke"><select value={meta.stroke} onChange={e=>set("stroke",e.target.value)}>{STROKES.map(s=><option key={s.id} value={s.id}>{s.label}</option>)}</select></Field>
+            <Field label="Default pool / course"><select value={meta.course} onChange={e=>set("course",e.target.value)}>{COURSES.map(c=><option key={c.id} value={c.id}>{c.label}</option>)}</select></Field>
+          </div>
+        </div>
+        <div style={{marginTop:14,borderTop:"1px solid var(--line)",paddingTop:12}}>
+          <label>Swimmer profiles {profiles.length>0 && <span className="muted" style={{fontWeight:400,fontSize:12}}>· {profiles.length}</span>}</label>
+          <div className="row" style={{marginTop:4}}>
+            <button className="btn sm" onClick={saveCurrentAsProfile}>Save current swimmer as profile</button>
+          </div>
+          {profiles.length>0 &&
+            <div style={{marginTop:8}}>
+              {profiles.map(p=>(
+                <div className="row" key={p.id} style={{justifyContent:"space-between",borderBottom:"1px solid var(--line)",padding:"5px 0"}}>
+                  <span style={{fontSize:13.5}}>{p.name} <span className="muted" style={{fontSize:12}}>· age {p.age||"—"} · {STROKES.find(s=>s.id===p.stroke)?.label||p.stroke}</span>{activeProfile===p.id&&<span className="chip strength" style={{fontSize:10,marginLeft:6}}>active</span>}</span>
+                  <span className="row" style={{gap:6}}>
+                    <button className="btn sm ghost" onClick={()=>switchProfile(p.id)}>Use</button>
+                    <button className="btn sm ghost" onClick={()=>deleteProfile(p.id)}>✕</button>
+                  </span>
+                </div>))}
+            </div>}
+          <div className="hint" style={{marginTop:6}}>Each profile remembers a swimmer's details and filters their saved progress. Switch swimmers from the selector at the top right.</div>
+        </div>
+        <div style={{marginTop:14,borderTop:"1px solid var(--line)",paddingTop:12}}>
+          <label>Data</label>
+          <div className="row" style={{marginTop:4}}>
+            <button className="btn sm ghost" onClick={clearHistory}>Clear saved progress history</button>
+          </div>
+          <div className="hint" style={{marginTop:6}}>Saved next to the app (swimlens_history.json / swimlens_profiles.json), on your computer only.</div>
+        </div>
+      </div>
+      </div>}
+
+      {/* 1 upload */}
+      <div className="card noprint" id="card-upload">
+        <h2><span className={"stepn"+(file?"":" idle")}>1</span>Upload a clip<span className="ctitle-r">MP4 / MOV · stays on your device</span></h2>
+        {!videoUrl ?
+          <label className={"drop"+(dragOver?" over":"")} onDragOver={e=>{e.preventDefault();setDragOver(true);}} onDragLeave={()=>setDragOver(false)} onDrop={onDrop}>
+            <div className="big">🎬</div>
+            <div><b>Drop a video here</b> or click to choose</div>
+            <div className="hint" style={{marginTop:6}}>A single length or a few strokes is plenty.</div>
+            <input type="file" accept="video/mp4,video/quicktime,.mp4,.mov,.m4v,.webm" onChange={e=>handleFile(e.target.files&&e.target.files[0])} />
+          </label>
+          :
+          <div>
+            <div className="video-stage"><video src={videoUrl} controls onLoadedMetadata={e=>setDuration(e.target.duration||0)} /></div>
+            <div className="row" style={{marginTop:10}}>
+              <button className="btn sm ghost" onClick={()=>{setFile(null);setVideoUrl(null);setFrames([]);setSelected([]);}}>Choose a different clip</button>
+              <span className="hint">{file?.name} · {duration?duration.toFixed(1)+"s":""}</span>
+            </div>
+          </div>}
+      </div>
+
+      {/* 2 details */}
+      <div className="card noprint" id="card-details">
+        <h2><span className="stepn">2</span>Swimmer details
+          <span className="ctitle-r"><button className="btn sm ghost" onClick={()=>setMeta(SAMPLE_META)}>Load sample</button></span></h2>
+        <div className="grid g3">
+          <Field label="First name"><input type="text" value={meta.name} onChange={e=>set("name",e.target.value)} placeholder="e.g. Maya" /></Field>
+          <Field label="Age"><input type="number" min="4" max="18" value={meta.age} onChange={e=>set("age",e.target.value)} /></Field>
+          <Field label="Sex"><select value={meta.sex} onChange={e=>set("sex",e.target.value)}><option value="female">Female</option><option value="male">Male</option></select></Field>
+          <Field label="Level"><select value={meta.level} onChange={e=>set("level",e.target.value)}>{LEVELS.map(l=><option key={l.id} value={l.id}>{l.label}</option>)}</select></Field>
+          <Field label="Stroke"><select value={meta.stroke} onChange={e=>set("stroke",e.target.value)}>{STROKES.map(s=><option key={s.id} value={s.id}>{s.label}</option>)}</select></Field>
+          <Field label="Course (pool)"><select value={meta.course} onChange={e=>set("course",e.target.value)}>{COURSES.map(c=><option key={c.id} value={c.id}>{c.label}</option>)}</select></Field>
+          <Field label="50 time (mm:ss.xx or s)"><input type="text" value={meta.t50} onChange={e=>set("t50",e.target.value)} placeholder="45.30" /></Field>
+          <Field label="100 time"><input type="text" value={meta.t100} onChange={e=>set("t100",e.target.value)} placeholder="1:41.32" /></Field>
+          <Field label="Splits (optional, per 50)"><input type="text" value={meta.splits} onChange={e=>set("splits",e.target.value)} placeholder="e.g. 47.0 / 54.3" /></Field>
+        </div>
+        <div style={{marginTop:12}}><Field label="Notes for the coach"><textarea value={meta.notes} onChange={e=>set("notes",e.target.value)} /></Field></div>
+        {fadeRatio!=null &&
+          <div className="hintbox" style={{marginTop:12}}>
+            100 is <b>{fadeRatio.toFixed(2)}×</b> the 50 pace ({fmtSec(t50s)} → {fmtSec(t100s)}).{fadeRatio>1.06?" That's a notable second-50 fade — the report will dig into pacing & endurance.":" Pacing looks fairly even."}
+          </div>}
+      </div>
+
+      {/* 3 extract */}
+      {videoUrl &&
+      <div className="card noprint" id="card-frames">
+        <h2><span className={"stepn"+(frames.length?"":" idle")}>3</span>Extract & choose frames
+          {frames.length>0 && <span className="ctitle-r">{selected.length} selected · up to {MAX_SELECT}</span>}</h2>
+        <div className="row">
+          <label style={{margin:0}}>Sample every</label>
+          <input type="number" step="0.1" min="0.1" max="3" value={intervalS} onChange={e=>setIntervalS(e.target.value)} style={{width:88}} />
+          <span className="hint">seconds</span>
+          <button className="btn primary" disabled={extracting} onClick={doExtract}>{extracting?<span><span className="spinner"></span> Extracting {extractPct}%</span>:(frames.length?"Re-extract":"Extract frames")}</button>
+        </div>
+        {extracting && <div className="progbar" style={{marginTop:10}}><i style={{width:extractPct+"%"}}></i></div>}
+
+        {duration>0 &&
+          <div className="row" style={{marginTop:12}}>
+            <label style={{margin:0}}>Scrub</label>
+            <input type="range" min="0" max={duration} step="0.05" value={scrubT} onChange={e=>setScrubT(parseFloat(e.target.value))} style={{flex:1}} />
+            <span className="hint" style={{minWidth:48}}>{scrubT.toFixed(2)}s</span>
+            <button className="btn sm" onClick={captureScrub}>Capture moment</button>
+          </div>}
+
+        {frames.length>0 &&
+          <>
+            <div className="row" style={{margin:"12px 0 4px"}}>
+              <button className="btn sm" disabled={!!labelBusy} onClick={smartPick}>{labelBusy==="smart"?<span><span className="spinner"></span> Finding key moments…</span>:"✨ Smart-pick by phase"}</button>
+              <button className="btn sm" onClick={()=>autoSelect(frames,8)}>Spread 8</button>
+              <button className="btn sm" onClick={()=>autoSelect(frames,16)}>Spread 16</button>
+              <button className="btn sm" onClick={()=>autoSelect(frames,Math.min(MAX_SELECT,frames.length))}>Select max</button>
+              <button className="btn sm" onClick={()=>setSelected([])}>Clear</button>
+              <button className="btn sm" disabled={poseBusy||!selected.length} onClick={runPoseOnSelected}>{poseBusy?<span><span className="spinner"></span> Detecting…</span>:"Pose overlay on selected"}</button>
+              {Object.keys(poseMap).length>0 && <label className="row" style={{margin:0,gap:6}}><input type="checkbox" checked={poseOn} onChange={e=>setPoseOn(e.target.checked)} /> show skeleton</label>}
+            </div>
+            <div className="filmstrip">
+              {frames.map((f,i)=>{
+                const sel=selected.includes(i),pose=poseMap[i],img=(poseOn&&pose)?pose.dataUrl:(focusCrops[i]||f).dataUrl,ph=phaseMap[i];
+                return <div key={i} className={"frame"+(sel?" sel":"")} onClick={()=>toggle(i)} title={"t="+f.time.toFixed(2)+"s"}>
+                  <img src={img} alt={"frame "+i} />
+                  <span className="tag t">{f.time.toFixed(1)}s</span>
+                  {ph && <span className="tag p">{ph}</span>}
+                  {pose&&pose.angles&&(pose.angles.elbow_left||pose.angles.elbow_right) && <span className="tag a" style={{bottom:6,top:"auto"}}>∠{pose.angles.elbow_left||pose.angles.elbow_right}°</span>}
+                  {sel && <span className="pick">{selected.indexOf(i)+1}</span>}
+                </div>;
+              })}
+            </div>
+
+            {selected.length>0 &&
+              <div style={{marginTop:6}}>
+                <div className="hint" style={{marginBottom:6}}>Label each selected frame with the phase it shows — this sharpens the analysis and powers the frame-by-frame review.</div>
+                <div className="row" style={{marginBottom:8}}>
+                  <button className="btn sm" disabled={!!labelBusy} onClick={autoLabelLocal}>{labelBusy==="local"?<span><span className="spinner"></span> Labeling…</span>:"✨ Auto-label (instant)"}</button>
+                  <button className="btn sm" disabled={!!labelBusy} onClick={autoLabelAI}>{labelBusy==="ai"?<span><span className="spinner"></span> Asking AI…</span>:"🤖 Auto-label with AI"}</button>
+                  <span className="hint">Fills the phases for you — you can still fix any. Instant = free/offline (freestyle); AI = most accurate (uses your key).</span>
+                </div>
+                {[...selected].sort((a,b)=>a-b).map(i=>(
+                  <div className="selrow" key={i}>
+                    <img src={(poseOn&&poseMap[i])?poseMap[i].dataUrl:(focusCrops[i]||frames[i]).dataUrl} alt="" />
+                    <div className="meta">
+                      <div style={{fontSize:12.5}} className="muted">Frame at {frames[i].time.toFixed(2)}s</div>
+                      {poseMap[i]&&poseMap[i].angles &&
+                        <div style={{marginTop:3}}>
+                          {poseMap[i].angles.elbow_left!=null&&<span className="anglechip">elbow {poseMap[i].angles.elbow_left||poseMap[i].angles.elbow_right}°</span>}
+                          {poseMap[i].angles.body_line_vs_horizontal!=null&&<span className="anglechip">body {poseMap[i].angles.body_line_vs_horizontal}°</span>}
+                          {poseMap[i].angles.knee_left!=null&&<span className="anglechip">knee {poseMap[i].angles.knee_left}°</span>}
+                        </div>}
+                    </div>
+                    <select value={phaseMap[i]||""} onChange={e=>setPhaseMap(m=>({...m,[i]:e.target.value}))}>
+                      <option value="">— phase —</option>
+                      {phases.map(p=><option key={p} value={p}>{p}</option>)}
+                    </select>
+                    <button className="btn sm ghost" onClick={()=>toggle(i)}>✕</button>
+                  </div>
+                ))}
+              </div>}
+
+            {poseAvg &&
+              <div className="hintbox" style={{marginTop:10}}>
+                Pose averages across analyzed frames:{" "}
+                {poseAvg.elbow!=null&&<span className="anglechip">avg elbow {poseAvg.elbow}°</span>}
+                {poseAvg.body_line!=null&&<span className="anglechip">avg body-line {poseAvg.body_line}°</span>}
+                {poseAvg.knee!=null&&<span className="anglechip">avg knee {poseAvg.knee}°</span>}
+                <span className="hint"> — rough estimates from a single-pose model; treat as hints.</span>
+              </div>}
+
+            {/* focus on one swimmer (for clips with several kids) */}
+            <div style={{marginTop:12,borderTop:"1px solid var(--line)",paddingTop:12}}>
+              {!focusOpen ?
+                <div className="row">
+                  <button className="btn primary" onClick={openFocus}>🎯 Pick which swimmer (for clips with several kids)</button>
+                  {(Object.keys(focusCrops).length>0||(trackedCrops&&trackedCrops.length)) && <span className="chip strength">✓ focused on your swimmer</span>}
+                </div>
+                :
+                <div>
+                  <div className="row" style={{marginBottom:8}}>
+                    <b>Focus on your swimmer</b>
+                    {Object.keys(focusCrops).length>0 && <span className="chip strength">✓ applied</span>}
+                    <button className="btn sm ghost" style={{marginLeft:"auto"}} onClick={()=>setFocusOpen(false)}>Hide</button>
+                  </div>
+                  <div className="row" style={{marginBottom:8}}>
+                    <label style={{margin:0}}>Reference frame</label>
+                    <select value={refIdx==null?"":refIdx} onChange={e=>{setRefIdx(Number(e.target.value));setDetBoxes([]);setPickCenter(null);}}>
+                      {[...selected].sort((a,b)=>a-b).map(i=><option key={i} value={i}>{frames[i].time.toFixed(2)}s</option>)}
+                    </select>
+                    <button className="btn sm" disabled={focusBusy} onClick={detectRef}>{focusBusy?<span><span className="spinner"></span> …</span>:"Detect swimmers"}</button>
+                    <button className="btn sm" onClick={startBoxMode}>Draw a box</button>
+                    <button className="btn sm ghost" onClick={clearFocus}>Clear</button>
+                  </div>
+                  <div className="hintbox" style={{marginBottom:8}}>👆 <b>Click directly on your swimmer</b> in the image below to mark them (a target appears). Optionally press <b>Detect swimmers</b> first to snap to a detected box, or <b>Draw a box</b> around them.</div>
+                  <canvas ref={focusCanvasRef} onMouseDown={onCanvasDown} onMouseMove={onCanvasMove} onMouseUp={onCanvasUp} onMouseLeave={onCanvasUp}
+                    style={{maxWidth:"100%",borderRadius:10,border:"1px solid var(--line)",cursor:focusMode==="box"?"crosshair":"pointer",touchAction:"none"}}></canvas>
+                  <div className="row" style={{marginTop:8}}>
+                    <button className="btn primary sm" disabled={focusBusy||trackBusy||focusMode==="none"||(focusMode==="auto"&&!pickCenter)||(focusMode==="box"&&!boxRect)} onClick={applyFocus}>
+                      {focusBusy?<span><span className="spinner"></span> Working…</span>:"Apply (in-browser)"}</button>
+                    <button className="btn sm" disabled={trackBusy||focusBusy||(focusMode==="auto"&&!pickCenter)||(focusMode==="box"&&!boxRect)} onClick={robustTrack}>
+                      {trackBusy?<span><span className="spinner"></span> Tracking…</span>:"🎯 Robust AI tracking (helper)"}</button>
+                    {trackedCrops&&trackedCrops.length?<span className="chip strength">✓ AI-tracked ({trackedCrops.length})</span>:null}
+                  </div>
+                  {focusMsg && <div className="hint" style={{marginTop:6}}>{focusMsg}</div>}
+                  <div className="hint" style={{marginTop:6}}>Pick your swimmer (Detect → click, or Draw a box), then choose how to follow them:<br/>
+                    <b>Apply (in-browser)</b> = fast, offline, follows by nearest-position (can jump if swimmers cross).<br/>
+                    <b>Robust AI tracking</b> = sends the clip to the local helper (YOLO + ByteTrack) to keep one identity through crossings, occlusion and turns. Needs the one-time install; falls back to in-browser automatically if it isn’t set up.</div>
+                </div>}
+            </div>
+
+            <div className="row" style={{marginTop:14}}>
+              <button className="btn primary" disabled={analyzing||selected.length<3} onClick={analyze}>
+                {analyzing?<span><span className="spinner"></span> Analyzing…</span>:"Analyze stroke →"}</button>
+              <span className="hint">Sends {selected.length} still{selected.length===1?"":"s"}{Object.keys(poseMap).length?" + pose angles":""}{cvResult?" + motion metrics":""} to Claude (two compact calls: analysis, then a coaching plan).</span>
+            </div>
+
+            {/* local computer-vision motion analysis (whole clip) */}
+            <div style={{marginTop:14,borderTop:"1px solid var(--line)",paddingTop:12}}>
+              <div className="row">
+                <button className="btn" disabled={cvBusy} onClick={runMotionAnalysis}>{cvBusy?<span><span className="spinner"></span> Analyzing motion… {cvPct}%</span>:"📈 Full motion analysis (local CV)"}</button>
+                <span className="hint">Runs the open-source pose model across the whole clip to measure body-line, elbow, stroke &amp; kick tempo, and left/right symmetry. Stays on your computer. {focusMode==="box"&&boxRect?"Uses your drawn box.":"Tip: draw a focus box first if several kids are in frame."}</span>
+              </div>
+              {cvBusy && <div className="progbar" style={{marginTop:8}}><i style={{width:cvPct+"%"}}></i></div>}
+              {cvResult &&
+                <div style={{marginTop:12}}>
+                  <div className="hint" style={{marginBottom:8}}>
+                    <span className="chip" style={{background:cvResult.summary.lowConfidence?"rgba(255,186,73,.15)":"rgba(54,214,122,.15)",color:cvResult.summary.lowConfidence?"var(--warn)":"var(--good)",border:"1px solid "+(cvResult.summary.lowConfidence?"rgba(255,186,73,.4)":"rgba(54,214,122,.4)")}}>
+                      {cvResult.summary.lowConfidence?"⚠ low confidence":"✓ good tracking"}: {cvResult.summary.usable}/{cvResult.summary.frames} frames clear ({cvResult.summary.coverage}%)</span>
+                    {cvResult.summary.lowConfidence?" — the swimmer was hard to see in many frames (splash, distance, or wrong swimmer); treat the numbers below as rough and re-film side-on / closer if you can.":""}
+                  </div>
+                  <div className="row" style={{gap:8,marginBottom:10}}>
+                    {cvResult.summary.strokeRate!=null && <span className="anglechip">~{cvResult.summary.strokeRate} strokes/min</span>}
+                    {cvResult.summary.strokeCount!=null && <span className="anglechip">{cvResult.summary.strokeCount} strokes</span>}
+                    {cvResult.summary.kickCount!=null && <span className="anglechip">{cvResult.summary.kickCount} kicks (~{cvResult.summary.kickRate}/min)</span>}
+                    {cvResult.summary.breathCount!=null && <span className="anglechip">{cvResult.summary.breathCount} breaths</span>}
+                    {cvResult.summary.catchElbow!=null && <span className="anglechip">catch elbow ~{cvResult.summary.catchElbow}°</span>}
+                    {cvResult.summary.bodyLine && <span className="anglechip">body-line {cvResult.summary.bodyLine.mean}° (range {cvResult.summary.bodyLine.min}–{cvResult.summary.bodyLine.max})</span>}
+                    {cvResult.summary.elbow && <span className="anglechip">elbow {cvResult.summary.elbow.mean}° (range {cvResult.summary.elbow.min}–{cvResult.summary.elbow.max})</span>}
+                    {cvResult.summary.symmetry && <span className="anglechip">L/R symmetry {cvResult.summary.symmetry.pct}%</span>}
+                  </div>
+                  {cvResult.phases && cvResult.phases.some(p=>p) &&
+                    <div style={{marginBottom:14}}>
+                      <div className="hint" style={{marginBottom:4}}>Phase timeline (each cell = a sampled moment):</div>
+                      <div style={{display:"flex",height:22,borderRadius:6,overflow:"hidden",border:"1px solid var(--line)"}}>
+                        {cvResult.phases.map((p,i)=><div key={i} title={cvResult.times[i]+"s · "+(p||"—")} style={{flex:1,background:phaseColor(p)}}></div>)}
+                      </div>
+                      <div className="row" style={{gap:6,marginTop:6}}>
+                        {[...new Set(cvResult.phases.filter(p=>p))].map(p=>
+                          <span key={p} className="hint" style={{display:"inline-flex",alignItems:"center",gap:4}}>
+                            <span style={{width:10,height:10,borderRadius:2,background:phaseColor(p),display:"inline-block"}}></span>{p}</span>)}
+                      </div>
+                    </div>}
+                  <div style={{height:190,marginBottom:16}}><canvas ref={cvc1}></canvas></div>
+                  <div style={{height:190,marginBottom:16}}><canvas ref={cvc2}></canvas></div>
+                  <div style={{height:190}}><canvas ref={cvc3}></canvas></div>
+                  <div className="hint" style={{marginTop:8}}>Measured locally from {cvResult.summary.frames} frames with {cvResult.summary.poseModel||"MoveNet"}{trackedCrops&&trackedCrops.length?" on the identity-locked swimmer":cvResult.summary.cropped?" (cropped to your swimmer)":""}. Tempo, breaths &amp; symmetry are rough estimates from a single-camera view — treat as guidance. The phase timeline is tuned for freestyle. These numbers are also sent to the written report to ground it.</div>
+                </div>}
+            </div>
+          </>}
+      </div>}
+
+      {/* analyzing skeleton */}
+      {analyzing &&
+        <div className="card noprint" id="card-analyze">
+          <h2><span className="stepn">4</span>Analyzing</h2>
+          <div className="stage-msg"><span className="spinner"></span>{stage}</div>
+          <div className="skeleton" style={{width:"70%",marginTop:14}}></div>
+          <div className="skeleton" style={{width:"95%"}}></div>
+          <div className="skeleton" style={{width:"88%"}}></div>
+          <div className="skeleton" style={{width:"60%"}}></div>
+        </div>}
+
+      {error && <div className="card noprint"><div className="err">{error}</div></div>}
+
+      {/* report */}
+      {report &&
+        <div ref={refReport} id="card-report">
+          <div className="row noprint" style={{justifyContent:"flex-end",marginBottom:-6}}>
+            <button className="btn sm" onClick={readAloud}>{speaking?"⏹ Stop":"🔊 Read aloud"}</button>
+            <button className="btn sm" onClick={()=>window.print()}>Print / PDF</button>
+            <button className="btn sm" onClick={copyReport}>Copy text</button>
+            <button className="btn sm" onClick={downloadJSON}>Export JSON</button>
+            <button className="btn sm" onClick={saveSession}>Save to tracker</button>
+          </div>
+          <div className="report-head" style={{marginTop:16}}>
+            <h2>{meta.name||"Swimmer"} · age {meta.age} · {STROKES.find(s=>s.id===meta.stroke)?.label}</h2>
+            <p>{report.summary}</p>
+            {report.one_thing &&
+              <div className="onething"><span className="onething-tag">⭐ If you fix one thing</span> {report.one_thing}</div>}
+            {Array.isArray(report.strengths)&&report.strengths.length>0 &&
+              <div style={{marginTop:10}}>
+                <div className="muted" style={{fontSize:12.5,marginBottom:4}}>What's already working — keep doing it:</div>
+                <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                  {report.strengths.map((s,i)=><span className="chip strength" key={i} style={{fontSize:12}}>✓ {s}</span>)}
+                </div>
+              </div>}
+          </div>
+
+          {Array.isArray(report.dimensions)&&report.dimensions.length>0 &&
+            <Collapse title="📊 Scorecard" sub="rating per area">
+              {report.dimensions.map((d,i)=>{
+                const cls=ratingClass(d.rating);
+                const hasScore=typeof d.score==="number"&&d.score>0;
+                const pct=hasScore?Math.max(4,Math.min(100,d.score)):{strength:100,developing:66,needs:33,na:18}[cls];
+                const col={strength:"var(--good)",developing:"var(--dev)",needs:"var(--needs)",na:"var(--na)"}[cls];
+                return <div key={i} style={{display:"grid",gridTemplateColumns:"minmax(96px,30%) 1fr auto auto",gap:8,alignItems:"center",margin:"7px 0"}}>
+                  <div style={{fontSize:13}}>{d.name}</div>
+                  <div style={{background:"var(--panel3)",borderRadius:6,height:14,overflow:"hidden",border:"1px solid var(--line)"}}>
+                    <div style={{width:pct+"%",height:"100%",background:col}}></div>
+                  </div>
+                  {hasScore?<span className="muted" style={{fontSize:11.5,minWidth:30,textAlign:"right"}}>{d.score}</span>:<span></span>}
+                  <span className={"chip "+cls} style={{fontSize:11}}>{ratingIcon(d.rating)} {d.rating}</span>
+                </div>;
+              })}
+              {typeof report.dimensions.find(d=>typeof d.score==="number"&&d.score>0)!=="undefined" &&
+                <div className="muted" style={{textAlign:"right",fontSize:12,marginTop:6}}>
+                  Overall {Math.round(report.dimensions.filter(d=>typeof d.score==="number"&&d.score>0).reduce((a,d)=>a+d.score,0)/Math.max(1,report.dimensions.filter(d=>typeof d.score==="number"&&d.score>0).length))}/100
+                </div>}
+              <div className="hint" style={{marginTop:8}}>Longer bar = stronger (0–100). ✓ strength · ↗ developing · ! needs work · ? can’t tell.</div>
+            </Collapse>}
+
+          {Array.isArray(report.top_priorities)&&report.top_priorities.length>0 &&
+            <Collapse title="🎯 Top priorities" sub="biggest wins first">
+              {report.top_priorities.map((p,i)=>(
+                <div className="prio" key={i}>
+                  <div style={{fontWeight:700}}>{i+1}. {p.priority}</div>
+                  <div className="muted" style={{margin:"4px 0 6px",fontSize:13.5}}>{p.why_it_matters}</div>
+                  {p.cue && <div className="cue">🗣️ Say it poolside: “{p.cue}”</div>}
+                  {(p.drills||[]).map((d,j)=>(
+                    <div className="drill" key={j}>
+                      <b>{d.name}.</b> {d.how}
+                      {d.purpose && <div className="drillmeta"><b>Purpose:</b> {d.purpose}</div>}
+                      {d.dose && <div className="drillmeta"><b>Dose:</b> {d.dose}</div>}
+                      {d.success_check && <div className="drillmeta"><b>Working when:</b> {d.success_check}</div>}
+                      {d.progression && <div className="drillmeta"><b>Level up:</b> {d.progression}</div>}
+                    </div>))}
+                </div>))}
+            </Collapse>}
+
+          {Array.isArray(report.weekly_focus)&&report.weekly_focus.length>0 &&
+            <Collapse title="🗓️ Week-by-week focus" sub="one thing at a time">
+              {report.weekly_focus.map((w,i)=>(
+                <div className="drill" key={i}>
+                  <b>{w.week}:</b> {w.focus}{w.main_drill?<div className="drillmeta"><b>Main drill:</b> {w.main_drill}</div>:null}
+                </div>))}
+            </Collapse>}
+
+          {report.practice_plan && (report.practice_plan.focus||(report.practice_plan.sets||[]).length>0) &&
+            <Collapse title="🏊 Practice plan">
+              {report.practice_plan.focus && <p style={{marginTop:0}} className="muted"><b style={{color:"var(--ink)"}}>Focus:</b> {report.practice_plan.focus}</p>}
+              {(report.practice_plan.sets||[]).map((s,i)=><div className="drill" key={i}><b>{s.name}.</b> {s.detail}</div>)}
+            </Collapse>}
+
+          {Array.isArray(report.periodization)&&report.periodization.length>0 &&
+            <Collapse title="📅 Training blocks (build-up)" sub="technique → build → sharpen" open={false}>
+              {report.periodization.map((b,i)=>(
+                <div className="drill" key={i}>
+                  <b>{b.block}{b.weeks?" · "+b.weeks:""}.</b> {b.focus}{b.sample?<div className="drillmeta"><b>Emphasis:</b> {b.sample}</div>:null}
+                </div>))}
+            </Collapse>}
+
+          {Array.isArray(report.dryland)&&report.dryland.length>0 &&
+            <Collapse title="🤸 Dryland (out of the water)" sub="bodyweight, kid-safe" open={false}>
+              {report.dryland.map((d,i)=>(
+                <div className="drill" key={i}><b>{d.name}.</b> {d.how}{d.dose?<div className="drillmeta"><b>Dose:</b> {d.dose}</div>:null}</div>))}
+            </Collapse>}
+
+          {Array.isArray(report.games)&&report.games.length>0 &&
+            <Collapse title="🎮 Fun games & challenges" open={false}>
+              <ul style={{margin:"4px 0 0",paddingLeft:20}}>
+                {report.games.map((g,i)=><li key={i} style={{fontSize:13.5,margin:"4px 0"}}>{g}</li>)}
+              </ul>
+            </Collapse>}
+
+          {Array.isArray(report.parent_tips)&&report.parent_tips.length>0 &&
+            <Collapse title="👪 Tips for parents" sub="help without over-coaching" open={false}>
+              <ul style={{margin:"4px 0 0",paddingLeft:20}}>
+                {report.parent_tips.map((t,i)=><li key={i} style={{fontSize:13.5,margin:"4px 0"}}>{t}</li>)}
+              </ul>
+            </Collapse>}
+
+          {Array.isArray(report.dimensions)&&report.dimensions.length>0 &&
+            <Collapse title="📋 Dimension-by-dimension">
+              {report.dimensions.map((d,i)=>(
+                <div className="dim" key={i}>
+                  <h4><span>{d.name}</span><span className={"chip "+ratingClass(d.rating)}>{ratingIcon(d.rating)} {d.rating}</span></h4>
+                  <div style={{fontSize:13.5}}>{d.observation}</div>
+                  {d.root_cause && <div className="muted" style={{marginTop:5,fontSize:13}}><b>Root cause:</b> {d.root_cause}</div>}
+                  {d.improve && <div className="muted" style={{marginTop:6,fontSize:13.5}}><b>Try:</b> {d.improve}</div>}
+                  {d.cue && <div className="cue" style={{marginTop:6}}>🗣️ “{d.cue}”</div>}
+                </div>))}
+            </Collapse>}
+
+          {selected.some(i=>phaseMap[i]) &&
+            <Collapse title="🔍 Frame-by-frame review" open={false}>
+              <div className="hint" style={{marginBottom:8}}>Your labeled frames next to the ideal position for that phase.</div>
+              {[...selected].sort((a,b)=>a-b).filter(i=>phaseMap[i]).map(i=>{
+                const ref=(REFERENCE[meta.stroke]||[]).find(r=>r.phase===phaseMap[i]);
+                const ang=poseMap[i]&&poseMap[i].angles;
+                return <div className="review" key={i}>
+                  <img src={(poseMap[i]?poseMap[i].dataUrl:(focusCrops[i]||frames[i]).dataUrl)} alt="" />
+                  <div>
+                    <div style={{fontWeight:700,marginBottom:4}}>{phaseMap[i]} <span className="muted" style={{fontWeight:400}}>· {frames[i].time.toFixed(2)}s</span></div>
+                    <div style={{fontSize:13.5}}><b className="muted">Ideal:</b> {ref?ref.ideal:"—"}</div>
+                    {ang &&
+                      <div style={{marginTop:6}}>
+                        {ang.elbow_left!=null&&<span className="anglechip">elbow {ang.elbow_left||ang.elbow_right}°</span>}
+                        {ang.body_line_vs_horizontal!=null&&<span className="anglechip">body-line {ang.body_line_vs_horizontal}°</span>}
+                        {ang.knee_left!=null&&<span className="anglechip">knee {ang.knee_left}°</span>}
+                      </div>}
+                  </div>
+                </div>;
+              })}
+            </Collapse>}
+
+          {(report.race_model||report.race_strategy) &&
+            <Collapse title="🏁 Race model & pacing" sub="read from the times">
+              {report.race_model && <p style={{marginTop:0}}>{report.race_model}</p>}
+              {report.race_strategy && <div className="cue" style={{fontStyle:"normal",marginTop:8}}><b>Race plan:</b> {report.race_strategy}</div>}
+            </Collapse>}
+
+          {report.performance_note &&
+            <Collapse title="⏱️ Performance note"><p style={{margin:0}}>{report.performance_note}</p></Collapse>}
+
+          <Collapse title="🎥 Next steps & caveats">
+            {report.film_next && <p style={{marginTop:0}}><b className="muted">Film/swim next:</b> {report.film_next}</p>}
+            {report.caveats && <div className="hint"><b>Caveats:</b> {report.caveats} This is coaching guidance, not medical advice — confirm anything time-based with the swimmer's own coach.</div>}
+          </Collapse>
+        </div>}
+
+      {/* motion review */}
+      {frames.length>0 && (()=>{
+        const list=selected.length?[...selected].sort((a,b)=>a-b):frames.map((_,i)=>i);
+        if(!list.length)return null;
+        const idx=Math.min(reviewIdx,list.length-1); const fi=list[idx];
+        const pm=poseMap[fi]; const imgUrl=(poseOn&&pm)?pm.dataUrl:(focusCrops[fi]||frames[fi]).dataUrl;
+        const ang=pm&&pm.angles;
+        return (
+        <div className="card noprint" id="card-review">
+          <h2><span className="stepn idle">🎬</span>Motion review<span className="ctitle-r">{idx+1} / {list.length}</span></h2>
+          <div className="reviewer">
+            <img src={imgUrl} alt="" />
+            <div className="rv-tags">
+              <span className="rv-time">{frames[fi].time.toFixed(2)}s</span>
+              {phaseMap[fi] && <span className="rv-phase">{phaseMap[fi]}</span>}
+            </div>
+          </div>
+          <div className="row" style={{marginTop:10}}>
+            <button className="btn sm" onClick={()=>{setReviewPlaying(false);setReviewIdx(x=>Math.max(0,x-1));}}>‹ Prev</button>
+            <button className="btn sm primary" onClick={()=>setReviewPlaying(p=>!p)}>{reviewPlaying?"❚❚ Pause":"▶ Play"}</button>
+            <button className="btn sm" onClick={()=>{setReviewPlaying(false);setReviewIdx(x=>Math.min(list.length-1,x+1));}}>Next ›</button>
+            <input type="range" min="0" max={list.length-1} value={idx} onChange={e=>{setReviewPlaying(false);setReviewIdx(Number(e.target.value));}} style={{flex:1,minWidth:120}} />
+            {Object.keys(poseMap).length>0 && <label className="row" style={{gap:6,margin:0}}><input type="checkbox" checked={poseOn} onChange={e=>setPoseOn(e.target.checked)} /> skeleton</label>}
+          </div>
+          {ang &&
+            <div style={{marginTop:8}}>
+              {(ang.elbow_left||ang.elbow_right)&&<span className="anglechip">elbow {ang.elbow_left||ang.elbow_right}°</span>}
+              {ang.body_line_vs_horizontal!=null&&<span className="anglechip">body-line {ang.body_line_vs_horizontal}°</span>}
+              {ang.knee_left!=null&&<span className="anglechip">knee {ang.knee_left}°</span>}
+            </div>}
+          <div className="hint" style={{marginTop:6}}>Scrub or play through your frames. Run “Pose overlay” in step 3, then tick “skeleton” to see the joints drawn on each frame. Select key frames for a focused review.</div>
+        </div>);
+      })()}
+
+      {/* knowledge hub: reference + faults + drills + glossary (tabbed, collapsible) */}
+      <details className="card noprint khub" id="card-knowledge">
+        <summary className="khub-sum">📚 Coaching reference &amp; glossary <span className="muted" style={{fontWeight:400,fontSize:12.5}}>— positions, faults, drills &amp; terms</span></summary>
+        <div className="tabbar">
+          {[["ref","Ideal positions"],["faults","Faults & fixes"],["drills","Drills"],["gloss","Glossary"]].map(t=>(
+            <button key={t[0]} className={"ktab"+(refTab===t[0]?" on":"")} onClick={()=>setRefTab(t[0])}>{t[1]}</button>))}
+        </div>
+        {refTab!=="gloss" &&
+          <div className="row" style={{margin:"12px 0 2px"}}>
+            <label style={{margin:0}}>Stroke</label>
+            <select value={refStroke||meta.stroke} onChange={e=>setRefStroke(e.target.value)}>{STROKES.map(s=><option key={s.id} value={s.id}>{s.label}</option>)}</select>
+            <span className="muted" style={{fontSize:12}}>showing {STROKES.find(s=>s.id===(refStroke||meta.stroke))?.label}</span>
+          </div>}
+        {refTab==="ref" &&
+          <div className="grid g2" style={{marginTop:8}}>
+            {(REFERENCE[refStroke||meta.stroke]||REFERENCE.freestyle).map((r,i)=>(
+              <div className="dim" key={i}><h4><span>{r.phase}</span></h4><div style={{fontSize:13.5}}>{r.ideal}</div></div>))}
+          </div>}
+        {refTab==="faults" &&
+          <div style={{marginTop:8}}>
+            {(FAULTS[refStroke||meta.stroke]||FAULTS.freestyle).map((f,i)=>(
+              <div className="dim" key={i}>
+                <h4><span>⚠ {f.fault}</span></h4>
+                <div style={{fontSize:13.5}}><b className="muted">Likely cause:</b> {f.cause}</div>
+                <div style={{fontSize:13.5,marginTop:3}}><b className="muted">Fix:</b> {f.fix}</div>
+                {f.cue && <div className="cue" style={{marginTop:5}}>🗣️ “{f.cue}”</div>}
+              </div>))}
+          </div>}
+        {refTab==="drills" &&
+          <div className="grid g2" style={{marginTop:8}}>
+            {(DRILLS[refStroke||meta.stroke]||DRILLS.freestyle).map((d,i)=>(
+              <div className="drill" key={i}><b>{d.name}.</b> {d.how}{d.purpose?<div className="drillmeta"><b>Trains:</b> {d.purpose}</div>:null}</div>))}
+          </div>}
+        {refTab==="gloss" &&
+          <div style={{marginTop:10}}>
+            <input type="text" placeholder="Search terms…" value={glossQ} onChange={e=>setGlossQ(e.target.value)} style={{width:"100%",maxWidth:320,marginBottom:10,boxSizing:"border-box"}} />
+            <div className="grid g2">
+              {GLOSSARY.filter(g=>{const q=glossQ.trim().toLowerCase();return !q||(g.term+" "+g.def).toLowerCase().includes(q);}).map((g,i)=>(
+                <div className="dim" key={i}><h4><span>{g.term}</span></h4><div style={{fontSize:13.5}}>{g.def}</div></div>))}
+            </div>
+          </div>}
+      </details>
+
+      {/* progress tracker */}
+      {sessions.length>0 &&
+        <div className="card noprint">
+          <div className="row" style={{marginBottom:6}}>
+            <h2 style={{margin:0}}>📈 Progress over time</h2>
+            <span className="muted" style={{fontSize:12}}>{shownSessions.length} session{shownSessions.length===1?"":"s"}{activeProfileObj?" · "+activeProfileObj.name:""}</span>
+            {activeProfileObj && <button className="btn sm ghost" onClick={()=>setHistScope(s=>s==="active"?"all":"active")}>{histScope==="active"?"Show all swimmers":"Show "+activeProfileObj.name+" only"}</button>}
+            <button className="btn sm ghost" style={{marginLeft:"auto"}} onClick={clearHistory}>Clear history</button>
+          </div>
+          {shownSessions.length>=2
+            ? <div style={{height:240,marginBottom:12}}><canvas ref={histRef}></canvas></div>
+            : <div className="hint" style={{marginBottom:10}}>Save another session (different day or meet) to see improvement charted here.</div>}
+          <div style={{overflowX:"auto"}}>
+            <table className="sessions cardify"><thead><tr><th>Date</th><th>Swimmer</th><th>Stroke</th><th>50</th><th>100</th><th>Stroke/min</th><th>Body-line°</th><th>Sym%</th><th>Catch°</th><th>Top priority</th></tr></thead>
+              <tbody>{shownSessions.map((s,i)=><tr key={i}><td data-label="Date">{s.date||s.when}</td><td data-label="Swimmer">{s.swimmer||"—"}</td><td data-label="Stroke">{s.stroke}</td><td data-label="50">{s.t50||"—"}</td><td data-label="100">{s.t100||"—"}</td><td data-label="Stroke/min">{s.strokeRate!=null?s.strokeRate:"—"}</td><td data-label="Body-line°">{s.bodyLine!=null?s.bodyLine:"—"}</td><td data-label="Sym%">{s.symmetry!=null?s.symmetry:"—"}</td><td data-label="Catch°">{s.catchElbow!=null?s.catchElbow:"—"}</td><td data-label="Top priority">{s.top}</td></tr>)}</tbody></table>
+          </div>
+          {shownSessions.length>=2 &&
+            <div style={{marginTop:14,borderTop:"1px solid var(--line)",paddingTop:12}}>
+              <label>Compare two sessions</label>
+              <div className="row" style={{marginTop:4}}>
+                <select value={cmpA} onChange={e=>setCmpA(e.target.value)}><option value="">— session A —</option>{shownSessions.map((s,i)=><option key={i} value={i}>{(s.date||s.when)+" · "+(s.swimmer||"")+" · "+s.stroke}</option>)}</select>
+                <select value={cmpB} onChange={e=>setCmpB(e.target.value)}><option value="">— session B —</option>{shownSessions.map((s,i)=><option key={i} value={i}>{(s.date||s.when)+" · "+(s.swimmer||"")+" · "+s.stroke}</option>)}</select>
+              </div>
+              {cmpA!==""&&cmpB!==""&&shownSessions[cmpA]&&shownSessions[cmpB] &&
+                <table className="sessions" style={{marginTop:8}}>
+                  <thead><tr><th>Metric</th><th>{shownSessions[cmpA].date||shownSessions[cmpA].when}</th><th>{shownSessions[cmpB].date||shownSessions[cmpB].when}</th></tr></thead>
+                  <tbody>
+                    {[["50 time","t50"],["100 time","t100"],["Stroke rate /min","strokeRate"],["Body-line °","bodyLine"],["Symmetry %","symmetry"],["Catch elbow °","catchElbow"]].map((m,i)=>{
+                      const a=shownSessions[cmpA][m[1]],b=shownSessions[cmpB][m[1]];
+                      return <tr key={i}><td>{m[0]}</td><td>{a!=null&&a!==""?a:"—"}</td><td>{b!=null&&b!==""?b:"—"}</td></tr>;
+                    })}
+                  </tbody>
+                </table>}
+            </div>}
+          <div className="hint" style={{marginTop:6}}>Saved on your computer ({"swimlens_history.json"}) when the launcher is running, so it persists across sessions. Tip: run a clip each meet to watch the numbers trend.</div>
+        </div>}
+
+      <div className="hint noprint" style={{textAlign:"center",marginTop:24}}>Swim Coach AI · frames stay in your browser · analysis from stills — confirm timing with a live coach.</div>
+      </div>{/* .main */}
+      </div>{/* .layout */}
+    </div>
+  );
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
+<!-- swim coach ai v9 — tabbed coaching reference (positions/faults/drills/glossary) -->
